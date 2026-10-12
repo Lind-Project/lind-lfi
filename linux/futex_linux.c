@@ -1,6 +1,7 @@
 #include "futex.h"
 #include "linux.h"
 
+#include <errno.h>
 #include <sys/syscall.h>
 #include <time.h>
 #include <unistd.h>
@@ -31,14 +32,16 @@ host_futex_wait(struct LFILinuxThread *t, uint32_t *uaddr, int op, uint32_t val,
         k_timeout.tv_nsec = timeout->nsec;
         r = syscall(SYS_futex, uaddr, op, val, &k_timeout);
     }
-    return r;
+    // The sandbox expects -errno (EAGAIN, ETIMEDOUT, EINTR, ...), not -1.
+    return r < 0 ? -errno : r;
 }
 
 long
 host_futex_wake(struct LFILinuxThread *t, uint32_t *uaddr, int op, uint32_t val)
 {
     (void) t;
-    return syscall(SYS_futex, uaddr, op, val);
+    long r = syscall(SYS_futex, uaddr, op, val);
+    return r < 0 ? -errno : r;
 }
 
 long
@@ -46,5 +49,6 @@ host_futex_requeue(struct LFILinuxThread *t, uint32_t *uaddr, int op,
     uint32_t val, uint32_t val2, uint32_t *uaddr2)
 {
     (void) t;
-    return syscall(SYS_futex, uaddr, op, val, val2, uaddr2);
+    long r = syscall(SYS_futex, uaddr, op, val, val2, uaddr2);
+    return r < 0 ? -errno : r;
 }

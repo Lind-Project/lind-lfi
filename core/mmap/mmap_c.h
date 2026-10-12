@@ -45,6 +45,8 @@ enum MMapError mmap_unmap(struct MMapAddrSpace *mm, uintptr_t addr, size_t len,
                           MMapUpdateFn ufn, void *udata);
 bool mmap_query_page(const struct MMapAddrSpace *mm, uintptr_t addr,
                      struct MMapInfo *info);
+// Calls fn for each mapped region in address order.
+void mmap_foreach(const struct MMapAddrSpace *mm, MMapUpdateFn fn, void *udata);
 enum MMapError mmap_protect(struct MMapAddrSpace *mm, uintptr_t addr,
                             size_t len, int prot, MMapUpdateFn ufn,
                             void *udata);

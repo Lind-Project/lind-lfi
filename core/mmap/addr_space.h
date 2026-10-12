@@ -40,6 +40,8 @@ struct AddrSpace {
 
   Error unmap(uintptr_t addr, size_t len, UpdateFn ufn = nullptr);
   bool query_page(uintptr_t addr, MapInfo *info) const;
+  // Calls fn(start, len, info) for each mapped region, in address order.
+  void for_each(const std::function<void(uintptr_t, size_t, MapInfo)> &fn) const;
   Error protect(uintptr_t addr, size_t len, int prot, UpdateFn ufn = nullptr);
 
 private:

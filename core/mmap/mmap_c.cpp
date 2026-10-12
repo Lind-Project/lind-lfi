@@ -82,3 +82,11 @@ enum MMapError mmap_protect(struct MMapAddrSpace *mm, uintptr_t addr,
                             void *udata) {
   return to_c_error(mm->impl.protect(addr, len, prot, wrap_cb(ufn, udata)));
 }
+
+void mmap_foreach(const struct MMapAddrSpace *mm, MMapUpdateFn fn,
+                  void *udata) {
+  mm->impl.for_each([fn, udata](uintptr_t start, size_t len,
+                                mmap::MapInfo info) {
+    fn(start, len, to_c(info), udata);
+  });
+}

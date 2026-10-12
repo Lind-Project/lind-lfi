@@ -58,3 +58,31 @@ fdinit(struct LFILinuxEngine *engine, struct FDTable *t);
 // Closes all FDs in the table and frees associated memory.
 void
 fdfree(struct FDTable *t);
+
+// Duplicate src's table into the (empty) table dst, as fork does. Host
+// descriptors are shared (reference counted), so both processes refer to the
+// same open files. Returns 0 or a negative errno.
+int
+fdclone(struct FDTable *dst, struct FDTable *src);
+
+// Close every descriptor marked close-on-exec (used by execve).
+void
+fdcloexec(struct FDTable *t);
+
+// Get/set the per-descriptor flags (LINUX_O_CLOEXEC is the one that matters).
+int
+fdsetflags(struct FDTable *t, int fd, int flags);
+
+int
+fdgetflags(struct FDTable *t, int fd);
+
+// Like fdalloc, but picks the lowest free sandbox descriptor >= minfd and
+// stores no directory path (F_DUPFD).
+int
+fdalloc_min(struct FDTable *t, int host_fd, int minfd, int flags);
+
+// Duplicates descriptor oldfd (sharing the open file, and keeping the path of a
+// directory) into the lowest free slot >= minfd, as fcntl F_DUPFD does. Returns
+// the new descriptor or -errno.
+int
+fddup_min(struct FDTable *t, int oldfd, int minfd, int flags);

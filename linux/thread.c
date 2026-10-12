@@ -313,6 +313,8 @@ thread_clone(struct LFILinuxThread *t, enum LFIThreadOwner owner)
     // Copy all registers.
     *lfi_ctx_regs(new_t->ctx) = *lfi_ctx_regs(t->ctx);
     lfi_ctx_regs_relink_ctxreg(new_t->ctx);
+    // A new thread starts with its creator's signal mask.
+    new_t->sigmask = t->sigmask;
 
     return new_t;
 
@@ -331,6 +333,7 @@ lfi_thread_run(struct LFILinuxThread *p)
 EXPORT void
 lfi_thread_free(struct LFILinuxThread *t)
 {
+    sig_thread_free(t);
     // Unmap the stack (if created). If this thread was spawned by the sandbox
     // calling clone (fake or real), the stack will have been created by the
     // sandbox and not by us, so we don't have to free it.

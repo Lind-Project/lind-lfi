@@ -157,6 +157,12 @@ Error AddrSpace::unmap(uintptr_t addr, size_t len, UpdateFn ufn) {
   return Error::kOk;
 }
 
+void AddrSpace::for_each(
+    const std::function<void(uintptr_t, size_t, MapInfo)> &fn) const {
+  for (auto &e : regions_.get_overlapping(base_, base_ + len_))
+    fn(to_addr(e.start), (size_t)(to_addr(e.end) - to_addr(e.start)), e.val);
+}
+
 bool AddrSpace::query_page(uintptr_t addr, MapInfo *info) const {
   auto entry = regions_.find(to_page(addr));
   if (!entry)

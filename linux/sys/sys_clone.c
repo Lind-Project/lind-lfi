@@ -3,6 +3,13 @@
 
 #include <stdatomic.h>
 
+// When set, the next clone on this host thread creates a context that is run
+// up to its first lfi pause and then handed back through
+// lfi_captured_thread, instead of running as a new thread (see lfi_3i: used to
+// create the execution contexts that serve grate calls).
+_Thread_local bool lfi_capture_clone;
+_Thread_local struct LFILinuxThread *lfi_captured_thread;
+
 static bool
 isfork(uint64_t flags)
 {
@@ -105,7 +112,7 @@ spawn(struct LFILinuxThread *p, uint64_t flags, uint64_t stack, uint64_t ptidp,
     // lazy-attachment path, which hands the new context back to
     // lfi_linux_clone_cb so a host thread can run on it. Everything else gets
     // a pthread the runtime owns.
-    bool attach = p->ctx == p->proc->clone_ctx;
+    bool attach = p->ctx == p->proc->clone_ctx || lfi_capture_clone;
 
     // Both paths start out running under lfi_ctx_run below.
     struct LFILinuxThread *p2 = thread_clone(p, LFI_THREAD_RUNTIME);
@@ -156,6 +163,8 @@ spawn(struct LFILinuxThread *p, uint64_t flags, uint64_t stack, uint64_t ptidp,
         // callback hands it to.
         p2->owner = LFI_THREAD_HOST;
         new_ctx = p2->ctx;
+        lfi_captured_thread = p2;
+        lfi_capture_clone = false;
     } else {
         pthread_t *thread = malloc(sizeof(pthread_t));
         if (!thread) {

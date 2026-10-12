@@ -573,6 +573,215 @@ lfi_box_munmap(struct LFIBox *box, lfiptr addr, size_t size)
     return box_munmap_locked(box, addr, size);
 }
 
+struct ForeachCtx {
+    struct LFIBox *box;
+    void (*fn)(lfiptr, size_t, struct LFIMapInfo, void *);
+    void *udata;
+};
+
+static void
+foreach_cb(uintptr_t start, size_t len, struct MMapInfo info, void *udata)
+{
+    struct ForeachCtx *fc = udata;
+    fc->fn(p2l(fc->box, start), len,
+        (struct LFIMapInfo) {
+            .prot = info.prot,
+            .flags = info.flags,
+            .fd = info.fd,
+            .offset = info.offset,
+        },
+        fc->udata);
+}
+
+EXPORT void
+lfi_box_foreach_map(struct LFIBox *box,
+    void (*fn)(lfiptr, size_t, struct LFIMapInfo, void *), void *udata)
+{
+    BOX_LOCK(box, lk);
+    struct ForeachCtx fc = { box, fn, udata };
+    mmap_foreach(box->mm, foreach_cb, &fc);
+}
+
+struct CloneCtx {
+    struct LFIBox *dst;
+    struct LFIBox *src;
+    bool relocate;
+    int err;
+    int (*sharedfd)(int fd, void *udata);
+    void *udata;
+};
+
+static bool
+page_is_resident(const unsigned char *vec, size_t i)
+{
+    return (vec[i] & 1) != 0;
+}
+
+static void
+clone_region(uintptr_t start, size_t len, struct MMapInfo info, void *udata)
+{
+    struct CloneCtx *cc = udata;
+    if (cc->err)
+        return;
+    struct LFIBox *dst = cc->dst;
+    struct LFIBox *src = cc->src;
+    size_t pagesize = src->engine->opts.pagesize;
+    uintptr_t dstart = dst->base + (start - src->base);
+    int prot = info.prot;
+
+    // Shared memory stays shared: map the same backing in the destination.
+    if ((info.flags & LFI_MAP_SHARED) && info.fd >= 0) {
+        if (!cc->sharedfd) {
+            cc->err = -1;
+            return;
+        }
+        int nfd = cc->sharedfd(info.fd, cc->udata);
+        if (nfd < 0 ||
+            mmap_map_at(dst->mm, dstart, len, prot, info.flags, nfd,
+                info.offset, cbunmap, NULL) == (uintptr_t) -1 ||
+            mapmem(dstart, len, prot, info.flags, nfd, info.offset,
+                dst->pkey) < 0)
+            cc->err = -1;
+        return;
+    }
+
+    // Record the region in the destination's address space. The new region is
+    // anonymous: its contents are copied, not shared with the source's file.
+    int flags = (info.flags & ~LFI_MAP_SHARED) | LFI_MAP_PRIVATE |
+        LFI_MAP_ANONYMOUS;
+    uintptr_t m = mmap_map_at(dst->mm, dstart, len, prot, flags, -1, 0,
+        cbunmap, NULL);
+    if (m == (uintptr_t) -1) {
+        cc->err = -1;
+        return;
+    }
+
+    if (prot == LFI_PROT_NONE) {
+        if (mapmem(dstart, len, LFI_PROT_NONE, flags, -1, 0, dst->pkey) < 0)
+            cc->err = -1;
+        return;
+    }
+
+    // Map writable so the contents can be copied in, regardless of the final
+    // protection.
+    if (mapmem(dstart, len, LFI_PROT_READ | LFI_PROT_WRITE,
+            LFI_MAP_PRIVATE | LFI_MAP_ANONYMOUS, -1, 0, dst->pkey) < 0) {
+        cc->err = -1;
+        return;
+    }
+
+    bool anon = (info.flags & LFI_MAP_ANONYMOUS) != 0 || info.fd < 0;
+    size_t npages = len / pagesize;
+    unsigned char *vec = NULL;
+    if (anon) {
+        // Pages that were never touched are still zero in the child; skip
+        // them (this avoids materializing large untouched stacks and heaps).
+        vec = malloc(npages);
+        if (vec && mincore((void *) start, len, vec) != 0) {
+            free(vec);
+            vec = NULL;
+        }
+    }
+
+    bool exec = (prot & LFI_PROT_EXEC) != 0;
+    uint64_t src_hi = (uint64_t) src->base >> 32;
+    uint64_t dst_hi = (uint64_t) dst->base >> 32;
+    for (size_t i = 0; i < npages; i++) {
+        if (vec && !page_is_resident(vec, i))
+            continue;
+        uint8_t *sp = (uint8_t *) (start + i * pagesize);
+        uint8_t *dp = (uint8_t *) (dstart + i * pagesize);
+        if (!(prot & LFI_PROT_READ)) {
+            // Cannot read a write-only/exec-only region safely.
+            continue;
+        }
+        memcpy(dp, sp, pagesize);
+        if (cc->relocate && !exec) {
+            uint64_t *w = (uint64_t *) dp;
+            for (size_t j = 0; j < pagesize / 8; j++) {
+                if ((w[j] >> 32) == src_hi)
+                    w[j] = (w[j] & 0xffffffffULL) | (dst_hi << 32);
+            }
+        }
+    }
+    free(vec);
+
+    if (protectmem((void *) dstart, len, host_prot(prot), dst->pkey) != 0)
+        cc->err = -1;
+}
+
+EXPORT int
+lfi_box_clone(struct LFIBox *dst, struct LFIBox *src, bool relocate,
+    int (*sharedfd)(int fd, void *udata), void *udata)
+{
+    if (dst->size != src->size)
+        return -1;
+    // Lock in address order to avoid deadlock between concurrent clones.
+    struct LFIBox *first = dst < src ? dst : src;
+    struct LFIBox *second = dst < src ? src : dst;
+    BOX_LOCK(first, lk1);
+    BOX_LOCK(second, lk2);
+
+    struct CloneCtx cc = { dst, src, relocate, 0, sharedfd, udata };
+    mmap_foreach(src->mm, clone_region, &cc);
+    if (cc.err)
+        return -1;
+    if (src->retaddr)
+        dst->retaddr = dst->base + (src->retaddr - src->base);
+    return 0;
+}
+
+struct ResetEnt {
+    uintptr_t start;
+    size_t len;
+};
+
+struct ResetCtx {
+    struct ResetEnt *ents;
+    size_t n;
+    size_t cap;
+    bool oom;
+};
+
+static void
+reset_collect(uintptr_t start, size_t len, struct MMapInfo info, void *udata)
+{
+    (void) info;
+    struct ResetCtx *rc = udata;
+    if (rc->n == rc->cap) {
+        size_t ncap = rc->cap ? rc->cap * 2 : 64;
+        struct ResetEnt *p = realloc(rc->ents, ncap * sizeof(*p));
+        if (!p) {
+            rc->oom = true;
+            return;
+        }
+        rc->ents = p;
+        rc->cap = ncap;
+    }
+    rc->ents[rc->n++] = (struct ResetEnt) { start, len };
+}
+
+EXPORT bool
+lfi_verify_code(struct LFIEngine *engine, char *code, size_t size,
+    uintptr_t vaddr)
+{
+    if (engine->opts.no_verify)
+        return true;
+    return lfiv_verify(&engine->verifier, code, size, vaddr);
+}
+
+EXPORT void
+lfi_box_reset(struct LFIBox *box)
+{
+    BOX_LOCK(box, lk);
+    struct ResetCtx rc = { 0 };
+    mmap_foreach(box->mm, reset_collect, &rc);
+    for (size_t i = 0; i < rc.n; i++)
+        box_munmap_locked(box, p2l(box, rc.ents[i].start), rc.ents[i].len);
+    free(rc.ents);
+    box->retaddr = 0;
+}
+
 EXPORT void
 lfi_box_free(struct LFIBox *box)
 {

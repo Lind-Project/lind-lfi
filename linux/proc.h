@@ -62,9 +62,18 @@ struct LibSymbols {
     lfiptr setjmp;
 };
 
+struct Cage;
+struct SigSave;
+
 struct LFILinuxProc {
+    // The 3i cage this proc belongs to (NULL when running without 3i).
+    struct Cage *cage;
+
     // Underlying sandbox information.
     struct LFIBox *box;
+
+    // The sandbox has (or has had) shared memory mappings (3i runtime).
+    bool has_shared;
     struct LFIBoxInfo box_info;
 
     // Information for managing sys_brk.
@@ -194,11 +203,30 @@ struct LFILinuxThread {
     // Set once the sandbox has handed this context back with the LFI pause
     // syscall, which happens at most once, at the end of its startup.
     bool paused;
+
+    // Signal state (used by the 3i runtime). Only the owning thread touches
+    // sigmask, altstack and sigframes; sigpending is set by other threads.
+    uint64_t sigmask;
+    _Atomic(uint64_t) sigpending;
+    uint64_t altstack_sp;
+    uint64_t altstack_size;
+    int altstack_flags;
+    // Mask to restore when the signal that ends sigsuspend() has been handled.
+    uint64_t saved_sigmask;
+    bool has_saved_sigmask;
+    struct SigSave *sigframes;
 };
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+// Releases the signal-handler contexts saved for a thread (3i runtime).
+void
+sig_thread_free(struct LFILinuxThread *t);
+
+extern _Thread_local bool lfi_capture_clone;
+extern _Thread_local struct LFILinuxThread *lfi_captured_thread;
 
 int
 proc_mapany(struct LFILinuxProc *p, size_t size, int prot, int flags, int fd,

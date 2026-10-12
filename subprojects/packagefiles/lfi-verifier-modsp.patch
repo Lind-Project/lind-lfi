@@ -1,0 +1,34 @@
+Relax the x64 "modsp" macro-instruction so it accepts what the LFI toolchain
+(v0.12) emits to restore the stack pointer from memory -- alloca, variable-length
+arrays, setjmp/longjmp:
+
+    mov  esp, dword ptr gs:[...]     ; new stack pointer from sandboxed memory
+    lea  rsp, [rsp + r14]
+
+lfi-verifier d059b40 made modsp reject any memory source (the old code accepted
+*any* memory operand there, unchecked -- e.g. `mov esp, [rax]` -- which was
+unsound). This keeps that fix and allows only the sandboxed form: %gs-relative
+with a 32-bit address, the same form the verifier allows for ordinary loads.
+Drop this patch once a toolchain that emits a register source is released.
+
+--- a/src/x64/macroinst.c
++++ b/src/x64/macroinst.c
+@@ -396,9 +396,17 @@
+             FD_OP_REG(&i_mov, 0) != FD_REG_SP)
+         return (struct MacroInst){-1, 0};
+ 
++    // The new stack pointer may come from a register, an immediate, or memory
++    // -- but memory only through the sandboxed form (%gs-relative, 32-bit
++    // address), which is what compilers emit for e.g. alloca/VLA/longjmp stack
++    // restores with segment-based addressing.
++    bool mem_ok = FD_OP_TYPE(&i_mov, 1) == FD_OT_MEM &&
++            FD_SEGMENT(&i_mov) == FD_REG_GS &&
++            FD_ADDRSIZE(&i_mov) == 4;
+     if (FD_TYPE(&i_mov) != FDI_LEA &&
+             FD_OP_TYPE(&i_mov, 1) != FD_OT_REG &&
+-            FD_OP_TYPE(&i_mov, 1) != FD_OT_IMM)
++            FD_OP_TYPE(&i_mov, 1) != FD_OT_IMM &&
++            !mem_ok)
+         return (struct MacroInst){-1, 0};
+ 
+     FdInstr i_add;

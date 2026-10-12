@@ -32,6 +32,24 @@ else
   endif
 endif
 
+# The 3i runtime (cages, grates, process semantics) is built into liblfi-linux.
+if cpu == 'x86_64'
+  srcs += files(
+    '../threei/cage.c',
+    '../threei/call.c',
+    '../threei/dispatch.c',
+    '../threei/grate.c',
+    '../threei/nat.c',
+    '../threei/nat3i.c',
+    '../threei/nat_net.c',
+    '../threei/nat_misc.c',
+    '../threei/signal.c',
+    '../threei/shm.c',
+    '../threei/proc3i.c',
+    '../threei/engine.c',
+  )
+endif
+
 subdir('arch/' + archmap[cpu])
 subdir('sys')
 
@@ -54,11 +72,11 @@ liblfi_linux = static_library(
   c_args: c_args_warnings + defines,
   dependencies: [lfi_core.as_link_whole()] + libelf_dep,
   install: true,
-  include_directories: include_directories('include', 'arch/' + archmap[cpu]),
+  include_directories: include_directories('.', 'include', 'arch/' + archmap[cpu], '../threei', '../threei/include'),
 )
 
-lfi_linux = declare_dependency(link_with: liblfi_linux, include_directories: include_directories('include', '../core/include'))
+lfi_linux = declare_dependency(link_with: liblfi_linux, include_directories: include_directories('include', '../core/include', '../threei/include'))
 
-install_headers('include/lfi_linux.h')
+install_headers('include/lfi_linux.h', '../threei/include/lfi_3i.h', '../threei/include/lfi_3i_abi.h')
 
 subdir('test')

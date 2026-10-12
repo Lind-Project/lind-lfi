@@ -150,6 +150,7 @@ if get_option('enable_linux')
 
   subdir('linux')
   subdir('tools')
+  subdir('threei')
 
   liblfi_so = shared_library(
     'lfi',

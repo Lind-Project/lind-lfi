@@ -187,6 +187,44 @@ lfiptr
 lfi_box_mapany_noverify(struct LFIBox *box, size_t size, int prot, int flags,
     int fd, off_t off);
 
+// Calls fn(start, size, info, udata) for every mapped region of the sandbox, in
+// address order. Holds the box lock while iterating.
+void
+lfi_box_foreach_map(struct LFIBox *box,
+    void (*fn)(lfiptr start, size_t size, struct LFIMapInfo info, void *udata),
+    void *udata);
+
+// Duplicates the memory of 'src' into the empty sandbox 'dst', preserving
+// mappings and protections (executable pages are copied without being
+// re-verified, since 'src' was already verified). Only resident pages of
+// anonymous mappings are copied. If 'relocate' is true, every aligned 64-bit
+// word in the copied non-executable pages whose upper 32 bits equal those of
+// src's base address is rewritten to point into dst instead (conservative
+// pointer relocation, which makes fork() in a single address space possible
+// since sandbox pointers are absolute). Returns 0 on success.
+//
+// Shared mappings (LFI_MAP_SHARED with a descriptor) are not copied: the
+// destination maps the same file/memory. 'sharedfd' is called for each such
+// region with the source's descriptor and must return a descriptor for the
+// destination to map (typically a dup); it may be NULL if the source has no
+// shared mappings.
+int
+lfi_box_clone(struct LFIBox *dst, struct LFIBox *src, bool relocate,
+    int (*sharedfd)(int fd, void *udata), void *udata);
+
+// Runs the verifier on a buffer of code that would be loaded at 'vaddr'
+// (relative to a sandbox base). Returns true if the code is acceptable, or if
+// the engine does not verify. Lets a loader reject a program before it
+// replaces a running one.
+bool
+lfi_verify_code(struct LFIEngine *engine, char *code, size_t size,
+    uintptr_t vaddr);
+
+// Unmaps every mapping in the sandbox (used to replace the program image on
+// exec). The return function registered by lfi_box_init_ret is invalidated.
+void
+lfi_box_reset(struct LFIBox *box);
+
 // Unmaps a memory mapping in the sandbox. Returns -1 on failure.
 int
 lfi_box_munmap(struct LFIBox *box, lfiptr addr, size_t size);
