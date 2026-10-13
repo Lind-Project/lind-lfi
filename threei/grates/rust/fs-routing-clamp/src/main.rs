@@ -190,7 +190,12 @@ fn main() {
     }
 
     // Register lifecycle handlers on the child cage.
-    handlers::register_lifecycle_handlers(child_cage_id);
+    if !handlers::register_lifecycle_handlers(child_cage_id) {
+        // Fail closed: a cage without its lifecycle handlers would run unclamped.
+        eprintln!("fs-routing-clamp: could not install the clamp's handlers; not starting the cage");
+        unsafe { kill(child_cage_id as i32, 9) };
+        std::process::exit(1);
+    }
 
     // Signal the child to proceed.
     unsafe { sem_post(sem) };

@@ -44,11 +44,11 @@ pub extern "C" fn register_handler_handler(
                 &[alt_nr, grate_id, 0, 0, 0, 0],
             );
 
-            let _ = helpers::set_route(target_cage, syscall_nr, alt_nr);
-
             if ret != 0 {
-                return ret;
+                return ret; // no route recorded for a registration that did not happen
             }
+
+            let _ = helpers::set_route(target_cage, syscall_nr, alt_nr);
 
             match register_handler(target_cage, syscall_nr, ns_cage, ns_handler) {
                 Ok(_) => {}
@@ -126,7 +126,11 @@ pub extern "C" fn fork_handler(
     let args = [arg1, arg2, arg3, arg4, arg5, arg6];
     let arg_cages = [arg1cage, arg2cage, arg3cage, arg4cage, arg5cage, arg6cage];
 
-    let child_cage_id = helpers::do_syscall(arg1cage, SYS_CLONE, &args, &arg_cages) as u64;
+    let ret = helpers::do_syscall(arg1cage, SYS_CLONE, &args, &arg_cages);
+    if ret <= 0 {
+        return ret; // failure (negative errno) or the child's own return
+    }
+    let child_cage_id = ret as u64;
 
     if !is_thread_clone(arg1, arg1cage) {
         if helpers::is_cage_clamped(arg1cage) {
@@ -134,7 +138,11 @@ pub extern "C" fn fork_handler(
             helpers::clone_cage_routes(arg1cage, child_cage_id);
         }
 
-        register_lifecycle_handlers(child_cage_id);
+        if !register_lifecycle_handlers(child_cage_id) {
+            // Fail closed: kill the child rather than let it run without the clamp.
+            helpers::do_syscall(child_cage_id, grate_rs::constants::SYS_KILL, &[child_cage_id, 9, 0, 0, 0, 0], &[child_cage_id; 6]);
+            return -11; // EAGAIN
+        }
     }
 
     child_cage_id as i32
@@ -159,7 +167,7 @@ pub extern "C" fn exit_handler(
     )
 }
 
-pub fn register_lifecycle_handlers(cage_id: u64) {
+pub fn register_lifecycle_handlers(cage_id: u64) -> bool {
     let ns_cage = helpers::get_ns_cage_id();
 
     let handlers: &[(u64, SyscallHandler)] = &[
@@ -169,7 +177,11 @@ pub fn register_lifecycle_handlers(cage_id: u64) {
         (SYS_REGISTER_HANDLER, register_handler_handler),
     ];
 
+    let mut ok = true;
     for &(syscall_nr, handler) in handlers {
-        let _ = register_handler(cage_id, syscall_nr, ns_cage, handler);
+        if register_handler(cage_id, syscall_nr, ns_cage, handler).is_err() {
+            ok = false;
+        }
     }
+    ok
 }

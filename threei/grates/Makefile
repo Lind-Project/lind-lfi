@@ -19,8 +19,8 @@ OUT    := out
 # editing one rebuilds the program.
 LINK = $(LFICC) $(CFLAGS) $(INC) -static-pie -o $@ $(filter %.c,$^)
 
-GRATES := geteuid-grate strace-grate seccomp-grate witness-grate imfs-grate
-TESTS  := geteuid-test strace-test seccomp-chmod-test witness-exit-failure imfs-test exit-status seccomp-tamper-test
+GRATES := geteuid-grate strace-grate seccomp-grate witness-grate imfs-grate deny-register-grate
+TESTS  := geteuid-test strace-test seccomp-chmod-test witness-exit-failure imfs-test exit-status seccomp-tamper-test escape-probe
 
 all: $(addprefix $(OUT)/,$(GRATES) $(TESTS))
 
@@ -52,6 +52,10 @@ $(OUT)/witness-exit-failure: c/witness-grate/tests/exit_failure.c | $(OUT)
 $(OUT)/imfs-test: c/imfs-grate/test/imfs-test.c | $(OUT)
 	$(LINK)
 $(OUT)/seccomp-tamper-test: c/seccomp-grate/test/seccomp_tamper_test.c $(SHIM) | $(OUT)
+	$(LINK)
+$(OUT)/deny-register-grate: c/test-common/deny-register-grate.c $(SHIM) | $(OUT)
+	$(LINK)
+$(OUT)/escape-probe: c/test-common/escape_probe.c | $(OUT)
 	$(LINK)
 $(OUT)/exit-status: c/test-common/exit_status.c | $(OUT)
 	$(LINK)

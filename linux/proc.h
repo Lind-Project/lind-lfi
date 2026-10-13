@@ -200,6 +200,11 @@ struct LFILinuxThread {
     // Set when this thread exits and unwinds out of lfi_ctx_run.
     _Atomic(bool) exited;
 
+    // Set while a context created for a grate (a captured clone) is running its start-up code
+    // on its way to the pause call; the runtime lets it make only the few system calls that
+    // start-up needs (see threei_sys_handler).
+    bool capturing;
+
     // Set once the sandbox has handed this context back with the LFI pause
     // syscall, which happens at most once, at the end of its startup.
     bool paused;

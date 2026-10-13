@@ -186,10 +186,22 @@ pub extern "C" fn exec_handler(
 
             // This cage is going to be the target cage, register the fs-clamped routing syscalls
             // to this cage_id.
-            register_target_handlers(arg1cage);
+            let installed = register_target_handlers(arg1cage);
 
             helpers::deregister_clamped_cage(arg1cage);
             helpers::exit_nested_clamp();
+
+            // Fail closed: if the routing could not be installed completely the program must
+            // not run, because its calls would not all be routed through the clamp.
+            if installed != 0 {
+                log!("clamp installation failed ({}); terminating cage {}", installed, arg1cage);
+                return helpers::do_syscall(
+                    arg1cage,
+                    SYS_EXIT_GROUP,
+                    &[1, 0, 0, 0, 0, 0],
+                    &[arg1cage; 6],
+                );
+            }
 
             // We've detected the clamp boundary, we need to left shift all argv[] and update the
             // path to the binary to be argv[1].
@@ -293,7 +305,11 @@ pub extern "C" fn fork_handler(
     let is_thread = is_thread_clone(arg1, arg1cage);
 
     // Forward the fork to the runtime. Returns child cage ID to parent, 0 to child.
-    let child_cage_id = helpers::do_syscall(arg1cage, SYS_CLONE, &args, &arg_cages) as u64;
+    let ret = helpers::do_syscall(arg1cage, SYS_CLONE, &args, &arg_cages);
+    if ret <= 0 {
+        return ret; // failure (negative errno) or the child's own return
+    }
+    let child_cage_id = ret as u64;
 
     if !is_thread {
         // Copy fdtables — child always needs an entry for inner grates
@@ -347,7 +363,7 @@ pub extern "C" fn exit_handler(
 /// Register the four lifecycle handlers on a cage.
 ///
 /// Called on the initial child cage at startup.
-pub fn register_lifecycle_handlers(cage_id: u64) {
+pub fn register_lifecycle_handlers(cage_id: u64) -> bool {
     let ns_cage = helpers::get_ns_cage_id();
 
     let handlers: &[(u64, SyscallHandler)] = &[
@@ -357,6 +373,7 @@ pub fn register_lifecycle_handlers(cage_id: u64) {
         (SYS_REGISTER_HANDLER, register_handler_handler),
     ];
 
+    let mut ok = true;
     for &(syscall_nr, handler) in handlers {
         match register_handler(cage_id, syscall_nr, ns_cage, handler) {
             Ok(_) => {}
@@ -367,7 +384,9 @@ pub fn register_lifecycle_handlers(cage_id: u64) {
                     cage_id,
                     e
                 );
+                ok = false;
             }
         }
     }
+    ok
 }

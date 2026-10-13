@@ -1,0 +1,55 @@
+// Test grate for fault injection: refuses register_handler calls for call numbers >= a
+// threshold (clamp grates allocate alternate routing numbers from 2000 upward) and forwards the
+// rest. Used to check that a clamp whose installation partly fails fails closed.
+//   deny-register-grate <min-call-number> <program> [args...]
+#include <errno.h>
+#include <semaphore.h>
+#include <signal.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <sys/mman.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+#include "lind_syscall.h"
+
+static uint64_t min_nr, subject;
+
+static int guard(uint64_t g, uint64_t a1, uint64_t c1, uint64_t a2, uint64_t c2, uint64_t a3,
+    uint64_t c3, uint64_t a4, uint64_t c4, uint64_t a5, uint64_t c5, uint64_t a6, uint64_t c6)
+{
+    if (c1 >= min_nr)
+        return -EPERM;
+    return make_threei_call(1001, 0, g, subject, a1, c1, a2, c2, a3, c3, a4, c4, a5, c5, a6, c6, 0);
+}
+
+int main(int argc, char **argv)
+{
+    if (argc < 3) {
+        fprintf(stderr, "usage: %s <min-call-number> <program> [args...]\n", argv[0]);
+        return 2;
+    }
+    min_nr = strtoull(argv[1], 0, 0);
+    sem_t *sem = mmap(NULL, sizeof(*sem), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANON, -1, 0);
+    sem_init(sem, 1, 0);
+    int grate = getpid();
+    pid_t cage = fork();
+    if (cage < 0)
+        return 1;
+    if (cage == 0) {
+        sem_wait(sem);
+        execv(argv[2], &argv[2]);
+        _exit(127);
+    }
+    subject = (uint64_t) cage;
+    if (register_handler(cage, 1001, grate, (uint64_t) (uintptr_t) guard) != 0) {
+        kill(cage, SIGKILL);
+        return 1;
+    }
+    sem_post(sem);
+    int st;
+    if (wait(&st) < 0)
+        return 1;
+    return WIFEXITED(st) ? WEXITSTATUS(st) : WIFSIGNALED(st) ? 128 + WTERMSIG(st) : 1;
+}

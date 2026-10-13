@@ -244,6 +244,24 @@ threei_make_call(struct Cage *caller, struct LFILinuxThread *t, lfiptr reqp)
 // System call entry from sandboxed code
 // ---------------------------------------------------------------------------
 
+// System calls the guest's context start-up (thread entry, then the pause call) may make.
+static bool
+capture_startup_call(uint64_t nr)
+{
+    switch (nr) {
+    case 14:   // rt_sigprocmask: restore the signal mask
+    case 202:  // futex
+    case 218:  // set_tid_address
+    case 273:  // set_robust_list
+    case 186:  // gettid
+    case LFI3I_SYS_SELF:
+    case 1024: // pause: hands the context back to the runtime
+        return true;
+    default:
+        return false;
+    }
+}
+
 void
 threei_sys_handler(struct LFIContext *ctx)
 {
@@ -252,6 +270,15 @@ threei_sys_handler(struct LFIContext *ctx)
     struct LFILinuxProc *p = t->proc;
     struct Cage *c = p->cage;
     uint64_t nr = r->rax;
+
+    // A context created for a grate may run only its start-up code before it parks itself: a
+    // cage that misuses the capture request to get an application thread past its clone policy
+    // is ended as soon as that thread tries to do anything else.
+    if (unlikely(t->capturing) && !capture_startup_call(nr)) {
+        fprintf(stderr, "lfi: captured context made system call %lu before parking; "
+                        "terminating the cage\n", (unsigned long) nr);
+        thread_exit(t, LFI_EXIT_PROCESS, 137);
+    }
 
     // Leave if another thread asked the cage to terminate.
     if (unlikely(atomic_load_explicit(&p->terminating, memory_order_acquire)))

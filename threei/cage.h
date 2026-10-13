@@ -216,16 +216,21 @@ struct Frame {
 };
 
 extern _Thread_local struct Frame *tl_frames;
-// Context-spawn state. Creating a handler context means the guest's spawn
-// function issues a clone that must reach the native implementation (with
-// lfi_capture_clone set) instead of the cage's handler table, which a parent
-// grate may have filled with a handler for it. That one exemption is host
-// owned: lfi_capture_clone is only ever set by grate_capture(), which
-// accepts a request from the guest only inside a spawn the runtime started
-// (tl_spawn_auth) or against the small budget granted when the shim installs
-// its entry points; it is consumed by the next clone, and cleared when the
-// spawn function returns. Only the clone call is exempt; every other system
-// call stays mediated.
+// Context-spawn state. Creating a handler context means the guest's spawn function issues a
+// clone that the runtime turns into a parked context (lfi_capture_clone). Context creation is a
+// runtime operation, not application behaviour: that one clone skips the cage's handler table (a
+// parent grate's clone handler would otherwise be asked to serve, and could refuse or count, the
+// creation of a context it knows nothing about, and the grates' context pools would depend on
+// each other). The exemption is host-owned and narrow:
+//  * lfi_capture_clone is only set by grate_capture(), which accepts a request from the guest only
+//    inside a spawn the runtime started (tl_spawn_auth) or against the small budget granted when
+//    the shim installs its entry points (once per program image);
+//  * only a call that arrived as clone/clone3 is exempt (fork, aliased to clone, is not);
+//  * the next thread clone consumes the request, a process-creating clone clears it, and it is
+//    dropped when the spawn function returns, at thread start and at exec;
+//  * the new context may run only its start-up code and the pause call (LFILinuxThread.capturing),
+//    so a cage that misuses a request to get an application thread has the cage terminated
+//    instead of gaining a thread.
 extern _Thread_local bool tl_spawn_auth;
 void grate_spawn_state_reset(void);
 

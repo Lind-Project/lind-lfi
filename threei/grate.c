@@ -175,9 +175,18 @@ gctx_spawn(struct Cage *g)
     struct GCtx *created = NULL;
     collect_into = &created;
     struct LFIInvokeInfo old = lfi_invoke_info;
+    // This can run nested inside another spawn on the same host thread (a parent grate's clone
+    // handler needing a context while the outer capture is armed): keep the outer state intact.
+    bool outer_cap = lfi_capture_clone;
+    struct LFILinuxThread *outer_thread = lfi_captured_thread;
+    bool outer_auth = tl_spawn_auth;
+    grate_spawn_state_reset();
     tl_spawn_auth = true;
     (void) LFI_INVOKE(g->proc->box, &cl->ctx, g->g_spawn, long, (void) );
     grate_spawn_state_reset(); // success, failure or abandoned capture alike
+    lfi_capture_clone = outer_cap;
+    lfi_captured_thread = outer_thread;
+    tl_spawn_auth = outer_auth;
     lfi_invoke_info = old;
     collect_into = NULL;
     return created;

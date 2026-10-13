@@ -121,6 +121,7 @@ unsafe extern "C" {
     pub fn fork() -> pid_t;
     pub fn execv(prog: *const c_char, argv: *const *const c_char) -> c_int;
     pub fn waitpid(pid: pid_t, status: *mut c_int, options: c_int) -> pid_t;
+    pub fn kill(pid: pid_t, sig: c_int) -> c_int;
 
     // Memory management.
     pub fn mmap(

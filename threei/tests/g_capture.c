@@ -26,6 +26,7 @@ int main(int argc, char **argv)
         assert(register_handler(me, 39, grate, (uint64_t) (uintptr_t) answer777) == 0); // getpid
         assert(register_handler(me, 110, grate, (uint64_t) (uintptr_t) deny) == 0);      // getppid
         assert(register_handler(me, 57, grate, (uint64_t) (uintptr_t) deny) == 0);       // fork
+        assert(register_handler(me, 56, grate, (uint64_t) (uintptr_t) deny) == 0);       // clone
         execv(argv[1], &argv[1]);
         _exit(127);
     }
@@ -33,6 +34,21 @@ int main(int argc, char **argv)
     waitpid(pid, &st, 0);
     printf("[capture] child status %d\n", st);
     assert(WIFEXITED(st) && WEXITSTATUS(st) == 0);
+    // A second cage misuses CAPTURE to get an application thread past the parent's clone denial:
+    // the runtime must end it instead.
+    pid_t pid2 = fork();
+    assert(pid2 >= 0);
+    if (pid2 == 0) {
+        int me = getpid();
+        assert(register_handler(me, 56, grate, (uint64_t) (uintptr_t) deny) == 0);
+        char *args[] = { argv[1], (char *) "clone", NULL };
+        execv(argv[1], args);
+        _exit(127);
+    }
+    waitpid(pid2, &st, 0);
+    fprintf(stderr, "[capture] misuse child status %d\n", st);
+    // terminated by the runtime (a fault in the bogus thread or the containment exit), not alive
+    assert(WIFSIGNALED(st) || (WIFEXITED(st) && WEXITSTATUS(st) >= 128));
     printf("[capture] PASS\n");
     return 0;
 }

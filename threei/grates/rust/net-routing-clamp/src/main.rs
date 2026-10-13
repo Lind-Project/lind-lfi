@@ -155,7 +155,12 @@ fn main() {
     helpers::register_clamped_cage(child_cage_id);
     fdtables::init_empty_cage(child_cage_id);
 
-    handlers::register_lifecycle_handlers(child_cage_id);
+    if !handlers::register_lifecycle_handlers(child_cage_id) {
+        // Fail closed: a cage without its lifecycle handlers would run unclamped.
+        eprintln!("net-routing-clamp: could not install the clamp's handlers; not starting the cage");
+        unsafe { kill(child_cage_id as i32, 9) };
+        std::process::exit(1);
+    }
 
     unsafe { sem_post(sem) };
 

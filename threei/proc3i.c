@@ -453,6 +453,10 @@ long
 nat_clone(struct Call *c)
 {
     uint64_t flags = c->a[0];
+    // A capture request is for the clone that creates a thread (context); a clone that makes
+    // a process does not consume it, so it must not stay armed for a later thread clone.
+    if (!(flags & LINUX_CLONE_THREAD))
+        lfi_capture_clone = false;
     if (flags & LINUX_CLONE_THREAD) {
         // A new thread of the target cage, created from the target's own
         // thread (which is the calling thread, or is parked in a grate call).

@@ -2,7 +2,10 @@
 // handlers a parent grate installed for it. Exit status is a bitmask of the checks that failed.
 #define _GNU_SOURCE
 #include <errno.h>
+#include <sched.h>
+#include <stdlib.h>
 #include <stdio.h>
+#include <string.h>
 #include <sys/syscall.h>
 #include <unistd.h>
 
@@ -22,8 +25,46 @@ static int denied(void)
     return 0;
 }
 
-int main(void)
+// With CAPTURE armed, a direct thread clone is not mediated (context creation is a runtime
+// operation) but the "context" it makes may run only its start-up code: this one tries to run
+// application code (a write) in the new thread. The runtime must end the cage, and the parent
+// must never see an application thread running.
+static int abuse_clone(void)
 {
+    syscall(SYS_SETENTRY, (long) stub, (long) stub);
+    if (syscall(SYS_CAPTURE) != 0) return 1;
+    char *stk = (char *) malloc(65536);
+    static int ptid, ctid;
+    long flags = CLONE_VM | CLONE_FS | CLONE_FILES | CLONE_SIGHAND | CLONE_THREAD | CLONE_SYSVSEM;
+    long r;
+    // The new thread continues right after the syscall instruction on its own stack: it makes a
+    // write(1, ..., 1) (application behaviour, not context start-up) and then exits.
+    register long r10 __asm__("r10") = (long) &ctid;
+    register long r8 __asm__("r8") = 0;
+    __asm__ volatile(
+        "syscall\n\t"
+        "test %%rax, %%rax\n\t"
+        "jnz 1f\n\t"
+        "mov $1, %%eax\n\t"
+        "mov $1, %%edi\n\t"
+        "mov %%rsp, %%rsi\n\t"
+        "mov $1, %%edx\n\t"
+        "syscall\n\t"
+        "mov $60, %%eax\n\t"
+        "xor %%edi, %%edi\n\t"
+        "syscall\n\t"
+        "1:"
+        : "=a"(r)
+        : "0"(56L), "D"(flags), "S"(stk + 65536), "d"(&ptid), "r"(r10), "r"(r8)
+        : "rcx", "r11", "memory");
+    printf("FAIL: the cage survived a misused capture (r=%ld)\n", r);
+    return 0;
+}
+
+int main(int argc, char **argv)
+{
+    if (argc > 1 && !strcmp(argv[1], "clone"))
+        return abuse_clone();
     int fails = 0;
     if (denied()) fails |= 1;
     // 1. No shim installed: CAPTURE must be refused and change nothing.

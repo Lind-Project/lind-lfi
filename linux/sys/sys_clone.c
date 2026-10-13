@@ -2,6 +2,7 @@
 #include "trampoline.h"
 
 #include <stdatomic.h>
+#include <stdio.h>
 
 // When set, the next clone on this host thread creates a context that is run
 // up to its first lfi pause and then handed back through
@@ -19,7 +20,7 @@ isfork(uint64_t flags)
         (LINUX_CLONE_VM | LINUX_CLONE_VFORK | LINUX_SIGCHLD);
 }
 
-static void
+static int
 threadspawn_fake(struct LFILinuxThread *t)
 {
     struct LFIRegs *regs = lfi_ctx_regs(t->ctx);
@@ -34,8 +35,9 @@ threadspawn_fake(struct LFILinuxThread *t)
 #error "invalid arch"
 #endif
 
-    int code = lfi_ctx_run(t->ctx, entry);
-    assert(code == 0);
+    // The context is expected to park itself (return 0). Anything else, from a cage that
+    // misused the capture request, is reported to the caller instead of aborting the runtime.
+    return lfi_ctx_run(t->ctx, entry);
 }
 
 static void *
@@ -153,10 +155,20 @@ spawn(struct LFILinuxThread *p, uint64_t flags, uint64_t stack, uint64_t ptidp,
         // TODO: rethink whether this save/restore is necessary and how it
         // interacts with signals?
         struct LFIInvokeInfo old = lfi_invoke_info;
-        threadspawn_fake(p2);
+        p2->capturing = true;
+        int fake_code = threadspawn_fake(p2);
+        p2->capturing = false;
         lfi_invoke_info.ctx = old.ctx;
         lfi_invoke_info.targetfn = old.targetfn;
         lfi_invoke_info.box = old.box;
+        if (fake_code != 0) {
+            // The "context" ran and exited instead of parking: it was not a handler
+            // context. End the offending cage rather than keep a half-made thread.
+            lfi_capture_clone = false;
+            fprintf(stderr, "lfi: captured thread exited with %d; terminating the cage\n",
+                fake_code);
+            thread_exit(p, LFI_EXIT_PROCESS, 137);
+        }
 
         // The lfi_ctx_run frame is gone and from here the context is only ever
         // entered through the trampoline, by whichever host thread the clone

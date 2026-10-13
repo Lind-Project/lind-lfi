@@ -393,7 +393,11 @@ pub extern "C" fn ns_clone_handler(
         }
     }
 
-    register_lifecycle_handlers(child_cage_id);
+    if !register_lifecycle_handlers(child_cage_id) {
+        // Fail closed: kill the child rather than let it run without the clamp.
+        helpers::do_syscall(child_cage_id, SYS_KILL, &[child_cage_id, 9, 0, 0, 0, 0], &[child_cage_id; 6]);
+        return -11; // EAGAIN
+    }
     child_cage_id as i32
 }
 
