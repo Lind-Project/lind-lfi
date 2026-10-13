@@ -64,6 +64,11 @@ int copy_data_between_cages(uint64_t thiscage, uint64_t targetcage,
     uint64_t srcaddr, uint64_t srccage, uint64_t destaddr, uint64_t destcage,
     uint64_t len, uint64_t copytype);
 
+// Full-width variants used by the Rust library (see lfi3i.c).
+long lfi3i_copy_data_long(uint64_t srcaddr, uint64_t srccage, uint64_t destaddr,
+    uint64_t destcage, uint64_t len, uint64_t copytype);
+long lfi3i_copy_htab_long(uint64_t srccage, uint64_t targetcage);
+
 // Replaces targetcage's handler table with a copy of srccage's.
 int copy_handler_table_to_cage(uint64_t srccage, uint64_t targetcage);
 

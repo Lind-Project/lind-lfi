@@ -25,7 +25,7 @@ if [ -d "$OUT/rust" ]; then
     for h in pipe_stdin_reader file_collision_reader; do
         cp "$OUT/rust-tests/ipc-grate/$h" "$LFS/tests/ipc-grate/$h.cwasm" 2>/dev/null
     done
-    cp "$OUT/strace-test" "$OUT/geteuid-test" "$LFS/tests/" 2>/dev/null
+    cp "$OUT/strace-test" "$OUT/geteuid-test" "$OUT/exit-status" "$LFS/tests/" 2>/dev/null
     for d in "$OUT"/demo-tests/*/; do
         g=$(basename "$d"); mkdir -p "$LFS/demos/$g"; cp "$d"* "$LFS/demos/$g/"
         cp demos/$g/*.conf demos/$g/*.cfg "$LFS/demos/$g/" 2>/dev/null

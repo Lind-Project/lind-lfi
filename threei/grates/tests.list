@@ -23,6 +23,10 @@ run c/witness-grate/propagates-failure 77 - bash -c 'cd "$FIX" && "$RUN" --env W
 # blocks are handled by the clamp grates themselves.
 G=/grates; T=/tests
 run rust/geteuid-grate 0 'geteuid ret = 3000'  "$LRUN" $G/geteuid-grate $T/geteuid-test
+# A Rust grate must report its cage's failure too: a nonzero exit or a fatal signal may not become 0.
+run rust/geteuid-grate/propagates-exit   7   - "$LRUN" $G/geteuid-grate $T/exit-status 7
+run rust/geteuid-grate/propagates-signal 134 - "$LRUN" $G/geteuid-grate $T/exit-status abort
+run rust/strace-grate/propagates-exit    7   - "$LRUN" $G/strace-grate $T/exit-status 7
 run rust/strace-grate  0 'write_syscall'       "$LRUN" $G/strace-grate $T/strace-grate/strace_test
 run rust/readonly-grate 0 'Ok'                 "$LRUN" $G/readonly-grate $T/readonly-grate/readonly-grate-test
 run rust/fchmod-grate/fchmod   0 '13/13 passed' "$LRUN" $G/fchmod-grate --mask 644 $T/fchmod-grate/fchmod-test
@@ -40,6 +44,7 @@ run rust/fd-translate-grate  0 '48/48 passed'  "$LRUN" $G/fd-translate-grate $T/
 run rust/fs-view-grate+imfs 0 '15/15 passed' "$LRUN" $G/imfs-grate $G/fs-view-grate $T/fs-view-grate/fs_view_test
 run rust/imfs-grate    0 '153/153 passed'      "$LRUN" $G/imfs-grate $T/imfs-grate/imfs_test
 run rust/ipc-grate     0 '[0-9]+/[0-9]+ passed'      env WD=/tests/ipc-grate "$LRUN" $G/ipc-grate ./ipc_test
+run rust/ipc-grate/copy-denied 0 'copy_denied: PASS' "$LRUN" $G/testing-grate -s 1002:-1 $G/ipc-grate $T/ipc-grate/copy_denied_test
 run rust/resource-grate 0 '26 tests, 0 failures' env WD=/tests/resource-grate "$LRUN" $G/resource-grate test_resources.cfg $T/resource-grate/resource_test
 run rust/resource-grate/thread-limit 0 'thread_limit: PASS' env WD=/tests/resource-grate "$LRUN" $G/resource-grate test_threads.cfg $T/resource-grate/thread_limit_test
 run rust/fs-routing-clamp/routing 0 '26/26 passed' "$LRUN" $G/fs-routing-clamp --prefix /tmp %{ $G/testing-grate -s 2:-167,4:-167,21:-167,83:-167,84:-167,87:-167 $G/fs-routing-clamp --prefix /tmp/inner %{ $G/testing-grate -s 2:-166 %} %} $T/fs-routing-clamp/fs_routing_test

@@ -281,6 +281,17 @@ pub extern "C" fn exit_handler(
     arg6: u64, arg6cage: u64,
 ) -> i32 {
     let cage_id = arg1cage;
+    let args = [arg1, arg2, arg3, arg4, arg5, arg6];
+    let arg_cages = [arg1cage, arg2cage, arg3cage, arg4cage, arg5cage, arg6cage];
+
+    // exit (60) ends only the calling thread. A thread of the cage ending must not tear down the
+    // fd table the other threads (and the main thread) still use: only the main thread's exit,
+    // whose tid is the cage id, is process exit here. (exit_group always is.)
+    const SYS_GETTID: u64 = 186;
+    let tid = forward_syscall(SYS_GETTID, cage_id, &[0; 6], &[cage_id; 6]);
+    if tid > 0 && tid as u64 != cage_id {
+        return forward_syscall(SYS_EXIT, cage_id, &args, &arg_cages);
+    }
 
     fdtables::remove_cage_from_fdtable(cage_id);
     // Drop any IPC-epoll target maps owned by this cage.
@@ -288,8 +299,6 @@ pub extern "C" fn exit_handler(
         s.epoll_targets.retain(|(c, _), _| *c != cage_id);
     });
 
-    let args = [arg1, arg2, arg3, arg4, arg5, arg6];
-    let arg_cages = [arg1cage, arg2cage, arg3cage, arg4cage, arg5cage, arg6cage];
     forward_syscall(SYS_EXIT, cage_id, &args, &arg_cages)
 }
 

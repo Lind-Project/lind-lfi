@@ -50,6 +50,11 @@ int main(int argc, char **argv)
         for (int i = 0; i < reps; i++)
             if (copy_data_between_cages(grate, pid, where, pid, (uint64_t) (uintptr_t) buf, grate, n, 0) < 0) bad = 1;
         double el = (now() - t0) / reps;
+        // Outside the timed region: clear the buffer and do one more copy, so a copy that
+        // "succeeded" without moving data (or data left by an earlier copy) cannot pass.
+        memset(buf, 0, sizeof buf);
+        if (copy_data_between_cages(grate, pid, where, pid, (uint64_t) (uintptr_t) buf, grate, n, 0) < 0) bad = 1;
+        for (size_t k = 0; k < n; k++) if (buf[k] != 1) { bad = 1; break; }
         if (bad) { fprintf(stderr, "g_copy: a %zu B copy returned an error\n", n); return 1; }
         printf("copy_data_%zuB %.0f ns\n", n, el);
     }

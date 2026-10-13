@@ -9,16 +9,16 @@
 pub mod constants;
 pub mod ffi;
 pub mod fd_support;
+pub mod retcodes;
 
 use core::ffi::{c_char, c_int, c_void};
 use std::ffi::{CString, c_uint};
 use std::ptr;
 use std::collections::HashSet;
 
-use crate::constants::lind::ELINDAPIABORTED;
 use crate::constants::mman::*;
 use crate::ffi::{
-    clean_exit, cp_data_impl, cp_handler_impl, execv, fork, getpid_impl, make_syscall_impl, mmap,
+    clean_exit, cp_data_long_impl, cp_htab_long_impl, execv, fork, getpid_impl, make_syscall_impl, mmap,
     munmap, register_handler_impl, sem_destroy, sem_init, sem_post, sem_t, sem_wait, waitpid,
 };
 use crate::fd_support::FD_HANDLER_TABLE;
@@ -143,7 +143,7 @@ pub unsafe fn mmap_shared<T>() -> &'static mut T {
             let err = std::io::Error::last_os_error();
             println!("mmap failed: {}", err);
 
-            clean_exit(0);
+            clean_exit(1);
         }
 
         &mut *(ptr as *mut T)
@@ -197,9 +197,13 @@ pub fn register_handler(
 }
 
 /// Copy data between two cages.
+///
+/// Fails if the runtime refused the copy (bad cage, address outside the cage's memory, no
+/// authority) or if a grate interposed on the copy and denied it. See `retcodes` for how the
+/// result is decoded; the destination address that signals success is not mistaken for a failure.
 pub fn copy_data_between_cages(
-    thiscage: u64,
-    targetcage: u64,
+    _thiscage: u64,
+    _targetcage: u64,
     srcaddr: u64,
     srccage: u64,
     destaddr: u64,
@@ -207,31 +211,17 @@ pub fn copy_data_between_cages(
     len: u64,
     copytype: u64,
 ) -> Result<(), GrateError> {
-    let ret = unsafe {
-        cp_data_impl(
-            thiscage, targetcage, srcaddr, srccage, destaddr, destcage, len, copytype,
-        )
-    };
-
-    // 3i::copy_data_between_cages returns ELINDAPIABORTED for every error. The C
-    // function returns an int, so 0xE0010001 arrives as a negative i32: compare
-    // it as the unsigned 32-bit value (casting the i32 straight to u64 would
-    // sign-extend it and never match, turning every failure into Ok).
-    match ret as u32 as u64 {
-        ELINDAPIABORTED => Err(GrateError::CopyDataError(ELINDAPIABORTED as i32)),
-        _ => Ok(()),
-    }
+    let raw = unsafe { cp_data_long_impl(srcaddr, srccage, destaddr, destcage, len, copytype) };
+    crate::retcodes::decode_copy_data(raw).map_err(GrateError::CopyDataError)
 }
 
-/// Copy data between two cages.
+/// Replace `targetcage`'s handler table with a copy of `srccage`'s.
+///
+/// Success is exactly zero; every other result (no authority, no such cage, a denying grate) is
+/// an error.
 pub fn copy_handler_table_to_cage(srccage: u64, targetcage: u64) -> Result<(), GrateError> {
-    let ret = unsafe { cp_handler_impl(srccage, targetcage) };
-
-    // 3i::copy_handler_table_to_cage returns ELINDAPIABORTED for every error (see above).
-    match ret as u32 as u64 {
-        ELINDAPIABORTED => Err(GrateError::CopyHandlerError(ELINDAPIABORTED as i32)),
-        _ => Ok(()),
-    }
+    let raw = unsafe { cp_htab_long_impl(srccage, targetcage) };
+    crate::retcodes::decode_copy_htab(raw).map_err(GrateError::CopyHandlerError)
 }
 
 /// Use threei to make a syscall.
@@ -435,8 +425,10 @@ impl GrateBuilder {
     /// - This is a terminal function.
     /// - Must always be called from the parent grate.
     fn run_teardown(callback: Option<GrateTeardownCallback>, result: Result<i32, GrateError>) -> ! {
+        // The grate exits with the cage's status: its exit code, or 128+signal if it was killed.
         let exit_code = match &result {
-            Ok(status) => (*status >> 8) & 0xff, // WEXITSTATUS
+            Ok(status) if (*status & 0x7f) == 0 => (*status >> 8) & 0xff, // WIFEXITED
+            Ok(status) => 128 + (*status & 0x7f),                         // WIFSIGNALED
             Err(_) => 1,
         };
         match callback {
@@ -543,10 +535,8 @@ impl GrateBuilder {
 
                 // Wait for the cage process to exit and retrieve its status code.
                 let mut status: i32 = 0;
-                let _ = call_sys!(
-                    teardown,
-                    waitpid(cageid, &mut status as *mut i32 as *mut c_int, 0)
-                );
+                // (a failed wait is reported below, after the cleanup)
+                let waited = unsafe { waitpid(cageid, &mut status as *mut i32 as *mut c_int, 0) };
 
                 // Clean up semaphores.
                 call_sys!(teardown, sem_destroy(sem));
@@ -558,7 +548,11 @@ impl GrateBuilder {
                 // Check whether the cage launched successfully.
                 let launch_failed = state.launch_failed;
 
-                let result = if launch_failed != 0 {
+                let result = if waited < 0 {
+                    Err(GrateError::CoordinationError(
+                        "waitpid on the cage failed".to_string(),
+                    ))
+                } else if launch_failed != 0 {
                     let errno = state.errno;
 
                     // In case the cage binary was never run, return an Err.

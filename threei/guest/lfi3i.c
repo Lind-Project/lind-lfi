@@ -49,8 +49,8 @@ self_id(void)
     return (uint64_t) raw0(LFI3I_SYS_SELF);
 }
 
-int
-make_threei_call(unsigned int callnumber, uint64_t callname,
+static long
+threei_call_long(unsigned int callnumber, uint64_t callname,
     uint64_t self_cageid, uint64_t target_cageid,
     uint64_t arg1, uint64_t arg1cageid,
     uint64_t arg2, uint64_t arg2cageid,
@@ -74,7 +74,23 @@ make_threei_call(unsigned int callnumber, uint64_t callname,
         errno = (int) -ret;
         return -1;
     }
-    return (int) ret;
+    return ret;
+}
+
+int
+make_threei_call(unsigned int callnumber, uint64_t callname,
+    uint64_t self_cageid, uint64_t target_cageid,
+    uint64_t arg1, uint64_t arg1cageid,
+    uint64_t arg2, uint64_t arg2cageid,
+    uint64_t arg3, uint64_t arg3cageid,
+    uint64_t arg4, uint64_t arg4cageid,
+    uint64_t arg5, uint64_t arg5cageid,
+    uint64_t arg6, uint64_t arg6cageid,
+    int translate_errno)
+{
+    return (int) threei_call_long(callnumber, callname, self_cageid,
+        target_cageid, arg1, arg1cageid, arg2, arg2cageid, arg3, arg3cageid,
+        arg4, arg4cageid, arg5, arg5cageid, arg6, arg6cageid, translate_errno);
 }
 
 int
@@ -102,6 +118,29 @@ copy_data_between_cages(uint64_t thiscage, uint64_t targetcage,
     uint64_t me = self_id();
     return make_threei_call(LFI3I_SYS_COPY_DATA, UNUSED_NAME, me, me, srcaddr, srccage, destaddr, destcage, len, UNUSED_ID,
         copytype, UNUSED_ID, UNUSED_ARG, UNUSED_ID, UNUSED_ARG, UNUSED_ID, 0);
+}
+
+// Full-width results of the two copy calls, for callers (the Rust grate library)
+// that must tell a failure from a destination address whose low 32 bits look
+// like one. copy_data returns the destination address or a failure value;
+// copy_handler_table returns 0 or a failure value.
+long
+lfi3i_copy_data_long(uint64_t srcaddr, uint64_t srccage, uint64_t destaddr,
+    uint64_t destcage, uint64_t len, uint64_t copytype)
+{
+    uint64_t me = self_id();
+    return threei_call_long(LFI3I_SYS_COPY_DATA, UNUSED_NAME, me, me, srcaddr,
+        srccage, destaddr, destcage, len, UNUSED_ID, copytype, UNUSED_ID,
+        UNUSED_ARG, UNUSED_ID, UNUSED_ARG, UNUSED_ID, 0);
+}
+
+long
+lfi3i_copy_htab_long(uint64_t srccage, uint64_t targetcage)
+{
+    uint64_t me = self_id();
+    return threei_call_long(LFI3I_SYS_COPY_HTAB, UNUSED_NAME, me, me, srccage,
+        targetcage, UNUSED_ARG, UNUSED_ID, UNUSED_ARG, UNUSED_ID, UNUSED_ARG,
+        UNUSED_ID, UNUSED_ARG, UNUSED_ID, UNUSED_ARG, UNUSED_ID, 0);
 }
 
 int

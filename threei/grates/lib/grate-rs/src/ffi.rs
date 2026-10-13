@@ -79,20 +79,18 @@ unsafe extern "C" {
         fn_ptr_addr: u64,
     ) -> c_int;
 
-    #[link_name = "copy_data_between_cages"]
-    pub(crate) fn cp_data_impl(
-        thiscage: u64,
-        targetcage: u64,
+    #[link_name = "lfi3i_copy_data_long"]
+    pub(crate) fn cp_data_long_impl(
         srcaddr: u64,
         srccage: u64,
         destaddr: u64,
         destcage: u64,
         len: u64,
         copytype: u64,
-    ) -> c_int;
+    ) -> i64;
 
-    #[link_name = "copy_handler_table_to_cage"]
-    pub(crate) fn cp_handler_impl(srccage: u64, targetcage: u64) -> c_int;
+    #[link_name = "lfi3i_copy_htab_long"]
+    pub(crate) fn cp_htab_long_impl(srccage: u64, targetcage: u64) -> i64;
 
     #[link_name = "make_threei_call"]
     pub(crate) fn make_syscall_impl(

@@ -13,11 +13,14 @@ static pthread_mutex_t gate = PTHREAD_MUTEX_INITIALIZER;
 static void *blocked(void *a) { (void) a; pthread_mutex_lock(&gate); pthread_mutex_unlock(&gate); return 0; }
 
 #define MAXT 32
+#define LIMIT 4   /* `resource events 4` in test_threads.cfg */
+static int last_err;
 static int make_threads(pthread_t *t)
 {
     int n = 0;
     pthread_mutex_lock(&gate);
-    while (n < MAXT && pthread_create(&t[n], 0, blocked, 0) == 0) n++;
+    last_err = 0;
+    while (n < MAXT && (last_err = pthread_create(&t[n], 0, blocked, 0)) == 0) n++;
     return n;
 }
 static void join_threads(pthread_t *t, int n)
@@ -32,13 +35,14 @@ int main(void)
     int fails = 0;
     int n1 = make_threads(t);
     printf("created %d threads before the limit\n", n1);
-    if (n1 < 1 || n1 >= MAXT) { printf("FAIL: limit not enforced (created %d)\n", n1); fails++; }
+    if (n1 != LIMIT) { printf("FAIL: expected exactly %d threads, created %d\n", LIMIT, n1); fails++; }
+    if (last_err != EAGAIN) { printf("FAIL: the refused pthread_create returned %d, not EAGAIN\n", last_err); fails++; }
     join_threads(t, n1);
     usleep(100000);
     // accounting released: the same number can be created again
     int n2 = make_threads(t);
     printf("created %d threads after joining\n", n2);
-    if (n2 != n1) { printf("FAIL: accounting not released (%d then %d)\n", n1, n2); fails++; }
+    if (n2 != LIMIT || last_err != EAGAIN) { printf("FAIL: accounting not released (%d then %d, err %d)\n", n1, n2, last_err); fails++; }
     join_threads(t, n2);
     // processes are not threads: more forks than the thread limit must work
     for (int i = 0; i < n1 + 3; i++) {
@@ -46,7 +50,9 @@ int main(void)
         if (p < 0) { printf("FAIL: fork %d failed: %d\n", i, errno); fails++; break; }
         if (p == 0) _exit(0);
         int st;
-        waitpid(p, &st, 0);
+        if (waitpid(p, &st, 0) != p || !WIFEXITED(st) || WEXITSTATUS(st) != 0) {
+            printf("FAIL: forked child %d did not exit cleanly (status %d)\n", i, st); fails++; break;
+        }
     }
     printf(fails ? "thread_limit: FAILED\n" : "thread_limit: PASS\n");
     return fails ? 1 : 0;

@@ -1332,6 +1332,29 @@ static void test_bad_user_pointers(void) {
     close(p[0]); close(p[1]); close(sv[0]); close(sv[1]);
 }
 
+/* ── Test: creating threads must not touch pipe ownership ───────── */
+/* Threads share the fd table. If the grate treats pthread_create like fork it takes extra
+   references on every pipe end; the write end then never reaches zero and EOF never comes. */
+#include <pthread.h>
+static void *noop_thread(void *a) { (void)a; return 0; }
+
+static void test_thread_pipe_refs(void) {
+    printf("\n[test_thread_pipe_refs]\n");
+    int p[2];
+    CHECK("pipe()", pipe(p) == 0);
+    pthread_t t[3];
+    int made = 0;
+    for (int i = 0; i < 3; i++) if (pthread_create(&t[i], 0, noop_thread, 0) == 0) made++;
+    CHECK("3 threads created", made == 3);
+    for (int i = 0; i < made; i++) pthread_join(t[i], 0);
+    fcntl(p[0], F_SETFL, fcntl(p[0], F_GETFL) | O_NONBLOCK);
+    CHECK("close(write end)", close(p[1]) == 0);
+    char c;
+    ssize_t n = read(p[0], &c, 1);
+    CHECK("EOF (not EAGAIN) once the only write end is closed", n == 0);
+    close(p[0]);
+}
+
 /* ── Test: setsockopt/getsockopt on a regular AF_INET socket ──────── */
 /* AF_INET sockets without loopback target are FDKIND_KERNEL in the
    grate's fdtable; setsockopt/getsockopt translates to the runtime
@@ -1718,6 +1741,7 @@ int main(void) {
     test_fd_collision_after_exec();
     test_large_pipe_correctness();
     test_bad_user_pointers();
+    test_thread_pipe_refs();
 
     /* fcntl / cloexec regression coverage */
     test_fcntl_setfl_preservation();
