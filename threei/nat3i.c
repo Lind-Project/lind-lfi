@@ -33,10 +33,42 @@ related(struct Cage *caller, struct Cage *x)
     return x == caller || x->id == caller->id || cage_is_descendant(x, caller);
 }
 
+// When a grate forwards, unchanged, the very call it is serving, the
+// forwarded operation must not exceed what the cage that made the call could
+// have done itself: otherwise a confined cage could borrow the grate's wider
+// authority by routing a routing operation through it. Returns that
+// originating cage (the outermost cage of the current run of frames serving
+// this same call), or NULL if this is not a pass-through. A grate that makes
+// a different registration while it happens to be serving one (a clamp
+// allocating routes, say) acts with its own authority.
+static bool
+same_call(const struct Frame *f, const struct Call *c)
+{
+    if (f->nr != c->nr)
+        return false;
+    for (int i = 0; i < 6; i++)
+        if (f->a[i] != c->a[i] || (f->ac[i] & LFI3I_CAGEID_MASK) != c->ac[i])
+            return false;
+    return true;
+}
+
+static struct Cage *
+forward_origin(const struct Call *c)
+{
+    struct Frame *f = tl_frames;
+    if (!f || f->grate != c->caller)
+        return NULL;
+    struct Cage *origin = NULL;
+    for (; f && same_call(f, c); f = f->prev)
+        origin = f->caller;
+    return origin != c->caller ? origin : NULL;
+}
+
 long
 n3i_register_handler(struct Call *c)
 {
     struct Cage *caller = c->caller;
+    struct Cage *origin = forward_origin(c);
     uint64_t target_id = c->a[0];
     uint64_t callnum = c->ac[0];
     uint64_t grate_id = c->ac[1];
@@ -59,7 +91,8 @@ n3i_register_handler(struct Call *c)
     }
 
     // A cage may redirect its own calls, or those of cages it created.
-    if (!g_eng->opts.permissive && !related(caller, target)) {
+    if (!g_eng->opts.permissive &&
+        (!related(caller, target) || (origin && !related(origin, target)))) {
         ret = -EPERM;
         goto out_target;
     }
@@ -84,8 +117,10 @@ n3i_register_handler(struct Call *c)
     // itself, one of its ancestors (a child registering the grate that
     // created it) or one of its descendants. Otherwise a cage could invoke
     // arbitrary entry points of unrelated cages.
-    if (!g_eng->opts.permissive && !related(caller, grate) &&
-        !cage_is_descendant(caller, grate)) {
+    if (!g_eng->opts.permissive &&
+        ((!related(caller, grate) && !cage_is_descendant(caller, grate)) ||
+            (origin && !related(origin, grate) &&
+                !cage_is_descendant(origin, grate)))) {
         ret = -EPERM;
         goto out_grate;
     }
@@ -138,6 +173,7 @@ long
 n3i_copy_htab(struct Call *c)
 {
     struct Cage *caller = c->caller;
+    struct Cage *origin = forward_origin(c);
     uint64_t src_id = c->a[0];
     uint64_t dst_id = c->ac[0];
     if (src_id > 0xffffffffu || dst_id > 0xffffffffu)
@@ -152,7 +188,10 @@ n3i_copy_htab(struct Call *c)
         ret = srch_code();
     } else if (!g_eng->opts.permissive &&
         (!related(caller, dst) ||
-            !(related(caller, src) || cage_is_descendant(caller, src)))) {
+            !(related(caller, src) || cage_is_descendant(caller, src)) ||
+            (origin && (!related(origin, dst) ||
+                           !(related(origin, src) ||
+                               cage_is_descendant(origin, src)))))) {
         ret = -EPERM;
     } else if (src != dst) {
         size_t n = ht_limit(src), dn = ht_limit(dst);
