@@ -150,6 +150,7 @@ struct Cage {
     // Grate side. Entry points announced by the guest shim library.
     uintptr_t g_entry; // handler dispatch stub
     uintptr_t g_spawn; // creates a new grate context
+    _Atomic int g_init_budget; // CAPTURE requests allowed outside a runtime-driven spawn
     pthread_mutex_t g_lk;       // guards the context lists
     pthread_mutex_t g_spawn_lk; // serializes creation of new contexts
     struct GCtx *g_all;
@@ -210,15 +211,23 @@ struct Frame {
     struct Cage *target; // cage the call is on behalf of
     struct Cage *grate;  // grate serving the call
     struct GCtx *gc;
+    long nr;             // call number the grate was invoked for
+    const uint64_t *a, *ac; // its arguments and their cage ids (valid for the call)
 };
 
 extern _Thread_local struct Frame *tl_frames;
-// True while this host thread is running the guest's context-spawn function
-// (between LFI3I_SYS_CAPTURE and LFI3I_SYS_COLLECT): the system calls it makes
-// (clone, mmap, ...) belong to the runtime, not to the program, so they must
-// not be routed through the cage's handler table, which a parent grate may have
-// filled with handlers for exactly those calls.
-extern _Thread_local bool tl_spawning;
+// Context-spawn state. Creating a handler context means the guest's spawn
+// function issues a clone that must reach the native implementation (with
+// lfi_capture_clone set) instead of the cage's handler table, which a parent
+// grate may have filled with a handler for it. That one exemption is host
+// owned: lfi_capture_clone is only ever set by grate_capture(), which
+// accepts a request from the guest only inside a spawn the runtime started
+// (tl_spawn_auth) or against the small budget granted when the shim installs
+// its entry points; it is consumed by the next clone, and cleared when the
+// spawn function returns. Only the clone call is exempt; every other system
+// call stays mediated.
+extern _Thread_local bool tl_spawn_auth;
+void grate_spawn_state_reset(void);
 
 // Set while this host thread copies between sandboxes; a fault in that window
 // (the other sandbox unmapped the range concurrently) returns to the copy
@@ -275,6 +284,7 @@ long grate_call(struct Cage *caller, struct LFILinuxThread *caller_t,
 long grate_setentry(struct Cage *c, struct LFILinuxThread *t, lfiptr entry,
     lfiptr spawn);
 long grate_collect(struct Cage *c, long spawn_result);
+long grate_capture(struct Cage *c);
 void grate_free_all(struct Cage *c);
 
 // 3i API calls (nat3i.c)

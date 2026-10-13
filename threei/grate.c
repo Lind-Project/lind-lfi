@@ -45,7 +45,17 @@ static _Thread_local struct TCache tcache[CACHE_N];
 // shared pool, where another thread could take it first.
 static _Thread_local struct GCtx **collect_into;
 
-_Thread_local bool tl_spawning;
+_Thread_local bool tl_spawn_auth;
+
+// Drops any context-spawn state this host thread still holds, so it cannot
+// carry over into whatever guest code runs next on it.
+void
+grate_spawn_state_reset(void)
+{
+    tl_spawn_auth = false;
+    lfi_capture_clone = false;
+    lfi_captured_thread = NULL;
+}
 
 long
 grate_setentry(struct Cage *c, struct LFILinuxThread *t, lfiptr entry,
@@ -58,8 +68,31 @@ grate_setentry(struct Cage *c, struct LFILinuxThread *t, lfiptr entry,
     // Indirect branch targets must be 32-byte bundle starts on x86-64.
     if ((entry & 31) || (spawn & 31))
         return -EINVAL;
+    // The first installation per program image grants the budget for the
+    // shim's initial contexts; the runtime drives any further creation itself.
+    if (!c->g_entry && !c->g_spawn)
+        atomic_store(&c->g_init_budget, 2);
     c->g_entry = entry;
     c->g_spawn = spawn;
+    return 0;
+}
+
+// The guest asks that its next clone create a handler context. Granted only
+// where the runtime expects one (see tl_spawn_auth); anything else is refused
+// and leaves the mediation state untouched.
+long
+grate_capture(struct Cage *c)
+{
+    if (!c->g_spawn)
+        return -EPERM;
+    if (!tl_spawn_auth) {
+        int b = atomic_load(&c->g_init_budget);
+        do {
+            if (b <= 0)
+                return -EPERM;
+        } while (!atomic_compare_exchange_weak(&c->g_init_budget, &b, b - 1));
+    }
+    lfi_capture_clone = true;
     return 0;
 }
 
@@ -71,7 +104,6 @@ grate_collect(struct Cage *c, long spawn_result)
     struct LFILinuxThread *nt = lfi_captured_thread;
     lfi_captured_thread = NULL;
     lfi_capture_clone = false;
-    tl_spawning = false;
     if (spawn_result != 0 || !nt) {
         fprintf(stderr, "lfi3i: grate %u: context creation failed (%ld)\n",
                 c->id, spawn_result);
@@ -143,7 +175,9 @@ gctx_spawn(struct Cage *g)
     struct GCtx *created = NULL;
     collect_into = &created;
     struct LFIInvokeInfo old = lfi_invoke_info;
+    tl_spawn_auth = true;
     (void) LFI_INVOKE(g->proc->box, &cl->ctx, g->g_spawn, long, (void) );
+    grate_spawn_state_reset(); // success, failure or abandoned capture alike
     lfi_invoke_info = old;
     collect_into = NULL;
     return created;
@@ -199,6 +233,7 @@ grate_free_all(struct Cage *c)
     }
     c->g_all = c->g_free = c->g_cloner = NULL;
     c->g_entry = c->g_spawn = 0;
+    atomic_store(&c->g_init_budget, 0);
 }
 
 // Undo a grate call whose host frames are about to be discarded (the thread
@@ -223,7 +258,6 @@ grate_call(struct Cage *caller, struct LFILinuxThread *caller_t,
     struct Cage *target, uint32_t gid, uint32_t fnoff, long nr,
     const uint64_t a[6], const uint64_t ac[6])
 {
-    (void) nr;
     struct Cage *g = cage_get(gid);
     if (!g)
         return -ESRCH;
@@ -262,6 +296,9 @@ grate_call(struct Cage *caller, struct LFILinuxThread *caller_t,
         .caller = caller,
         .caller_t = caller_t,
         .target = target,
+        .nr = nr,
+        .a = a,
+        .ac = ac,
         .grate = g,
         .gc = gc,
     };

@@ -273,7 +273,9 @@ threei_sys_handler(struct LFIContext *ctx)
     int idx = ht_index(cnr);
     if (idx >= 0) {
         uint64_t e = atomic_load_explicit(&c->htab[idx], memory_order_acquire);
-        if (unlikely(e != 0) && !tl_spawning) {
+        // Only the clone that creates a handler context bypasses the table (nr, not
+        // cnr: fork is aliased to clone and must stay mediated).
+        if (unlikely(e != 0) && !(lfi_capture_clone && (nr == 56 || nr == 435))) {
             sys_clear_unused_args(cnr, cl.a);
             uint64_t *a = cl.a;
             // Every argument of a call a cage makes itself refers to the cage.

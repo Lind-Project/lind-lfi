@@ -73,6 +73,7 @@ cage_alloc(uint32_t ppid, struct LFILinuxProc *proc)
     c->umask = 022;
     c->nice = 0;
     c->g_entry = c->g_spawn = 0;
+    atomic_store(&c->g_init_budget, 0);
     c->g_all = c->g_free = c->g_cloner = NULL;
     atomic_store(&c->inflight, 0);
     atomic_store(&c->is_grate, false);

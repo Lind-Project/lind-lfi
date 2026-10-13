@@ -60,6 +60,7 @@ cage_run_main(struct Cage *c, struct LFILinuxThread *t, uintptr_t entry)
     pthread_mutex_unlock(&g_eng->tree_lk);
 
     c->main_t = t;
+    grate_spawn_state_reset();
     int code;
     for (;;) {
         code = lfi_ctx_run(t->ctx, entry);
@@ -68,6 +69,7 @@ cage_run_main(struct Cage *c, struct LFILinuxThread *t, uintptr_t entry)
             break;
         // exec: continue on the new image's main thread.
         c->next_thread = NULL;
+        grate_spawn_state_reset();
         t->stack = 0; // the old stack died with the old image
         lfi_thread_free(t);
         t = nt;

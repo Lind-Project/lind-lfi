@@ -1140,9 +1140,7 @@ threei_native(struct Call *c)
     case LFI3I_SYS_SETENTRY:
         return grate_setentry(c->caller, c->t, a[0], a[1]);
     case LFI3I_SYS_CAPTURE:
-        lfi_capture_clone = true;
-        tl_spawning = true;
-        return 0;
+        return grate_capture(c->caller);
     case LFI3I_SYS_SELF:
         return c->caller->id;
     case LFI3I_SYS_COLLECT:
