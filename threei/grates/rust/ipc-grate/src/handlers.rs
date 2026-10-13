@@ -41,32 +41,33 @@ const CLONE_VFORK: u64 = 0x0000_4000;
 
 // LFI: a cage's pointers are addresses in the cage's own sandbox, not in the
 // grate's, so they are accessed through copy_data_between_cages.
+//
+// Both return Err(-EFAULT) if the copy failed (bad cage id, address outside the
+// cage's memory, ...); callers must propagate it instead of acting on bytes
+// that were never transferred.
+const EFAULT_NEG: i32 = -14;
+
 #[inline]
-fn read_user_bytes(src: u64, cage: u64, dst: *mut u8, len: usize) {
+fn read_user_bytes(src: u64, cage: u64, dst: *mut u8, len: usize) -> Result<(), i32> {
     let me = getcageid();
-    let _ = copy_data_between_cages(me, cage, src, cage, dst as u64, me, len as u64, 0);
+    match copy_data_between_cages(me, cage, src, cage, dst as u64, me, len as u64, 0) {
+        Ok(_) => Ok(()),
+        Err(_) => Err(EFAULT_NEG),
+    }
 }
 
 #[inline]
-fn write_user_bytes(dst: u64, cage: u64, src: *const u8, len: usize) {
+fn write_user_bytes(dst: u64, cage: u64, src: *const u8, len: usize) -> Result<(), i32> {
     let me = getcageid();
-    let _ = copy_data_between_cages(me, cage, src as u64, me, dst, cage, len as u64, 0);
+    match copy_data_between_cages(me, cage, src as u64, me, dst, cage, len as u64, 0) {
+        Ok(_) => Ok(()),
+        Err(_) => Err(EFAULT_NEG),
+    }
 }
 
-fn read_clone_flags(clone_args_ptr: u64, clone_args_cage: u64) -> u64 {
-    let mut flags = 0u64;
-    let this_cage = getcageid();
-    let _ = copy_data_between_cages(
-        this_cage,
-        clone_args_cage,
-        clone_args_ptr,
-        clone_args_cage,
-        &mut flags as *mut u64 as u64,
-        this_cage,
-        8,
-        0,
-    );
-    flags
+// LFI passes the native clone flags value itself in arg1 (see grate_rs::clone_flags).
+fn read_clone_flags(arg1: u64, arg1cage: u64) -> u64 {
+    grate_rs::clone_flags(arg1, arg1cage)
 }
 
 fn ensure_cage_fdtable(cage: u64) {
@@ -353,12 +354,14 @@ pub extern "C" fn pipe_handler(
 
     // Write the two fds back to the cage's pipefd[2] array.
     let fds: [i32; 2] = [rfd, wfd];
-    let _ = copy_data_between_cages(
+    if copy_data_between_cages(
         this_cage, arg1cage,
         fds.as_ptr() as u64, this_cage,
         arg1, arg1cage,
         8, 0, // 2 x i32 = 8 bytes
-    );
+    ).is_err() {
+        return -14; // EFAULT: the copy to/from the cage failed
+    }
 
     0
 }
@@ -385,12 +388,14 @@ pub extern "C" fn pipe2_handler(
     };
 
     let fds: [i32; 2] = [rfd, wfd];
-    let _ = copy_data_between_cages(
+    if copy_data_between_cages(
         this_cage, arg1cage,
         fds.as_ptr() as u64, this_cage,
         arg1, arg1cage,
         8, 0,
-    );
+    ).is_err() {
+        return -14; // EFAULT: the copy to/from the cage failed
+    }
 
     0
 }
@@ -724,12 +729,14 @@ pub extern "C" fn poll_handler(
     // Read pollfd[] from the cage into a local buffer.
     let mut pollfds = vec![PollFd::default(); nfds];
     let bytes = (nfds * core::mem::size_of::<PollFd>()) as u64;
-    let _ = copy_data_between_cages(
+    if copy_data_between_cages(
         this_cage, arg1cage,
         arg1, arg1cage,
         pollfds.as_mut_ptr() as u64, this_cage,
         bytes, 0,
-    );
+    ).is_err() {
+        return -14; // EFAULT: the copy to/from the cage failed
+    }
 
     // First pass: classify each entry.  For IPC entries, compute revents
     // immediately and remember so we can replace negative fd back to
@@ -818,12 +825,14 @@ pub extern "C" fn poll_handler(
     }
 
     // Write final pollfd[] back to the cage.
-    let _ = copy_data_between_cages(
+    if copy_data_between_cages(
         this_cage, arg1cage,
         pollfds.as_ptr() as u64, this_cage,
         arg1, arg1cage,
         bytes, 0,
-    );
+    ).is_err() {
+        return -14; // EFAULT: the copy to/from the cage failed
+    }
 
     total_ready
 }
@@ -879,28 +888,34 @@ pub extern "C" fn select_handler(
     let have_e = arg4 != 0;
 
     if have_r {
-        let _ = copy_data_between_cages(
+        if copy_data_between_cages(
             this_cage, arg1cage,
             arg2, arg1cage,
             read_set.as_mut_ptr() as u64, this_cage,
             FD_SET_BYTES as u64, 0,
-        );
+        ).is_err() {
+            return -14; // EFAULT: the copy to/from the cage failed
+        }
     }
     if have_w {
-        let _ = copy_data_between_cages(
+        if copy_data_between_cages(
             this_cage, arg1cage,
             arg3, arg1cage,
             write_set.as_mut_ptr() as u64, this_cage,
             FD_SET_BYTES as u64, 0,
-        );
+        ).is_err() {
+            return -14; // EFAULT: the copy to/from the cage failed
+        }
     }
     if have_e {
-        let _ = copy_data_between_cages(
+        if copy_data_between_cages(
             this_cage, arg1cage,
             arg4, arg1cage,
             except_set.as_mut_ptr() as u64, this_cage,
             FD_SET_BYTES as u64, 0,
-        );
+        ).is_err() {
+            return -14; // EFAULT: the copy to/from the cage failed
+        }
     }
 
     // Build kernel-side sets (containing runtime vfds) and a reverse
@@ -986,12 +1001,14 @@ pub extern "C" fn select_handler(
                 None
             } else {
                 let mut tv = [0u8; 16];
-                let _ = copy_data_between_cages(
+                if copy_data_between_cages(
                     this_cage, arg5cage,
                     arg5, arg5cage,
                     tv.as_mut_ptr() as u64, this_cage,
                     16, 0,
-                );
+                ).is_err() {
+                    return -14; // EFAULT: the copy to/from the cage failed
+                }
                 let secs  = u64::from_le_bytes([tv[0], tv[1], tv[2], tv[3], tv[4], tv[5], tv[6], tv[7]]);
                 let usecs = u32::from_le_bytes([tv[8], tv[9], tv[10], tv[11]]) as u64;
                 Some((secs as u128).saturating_mul(1_000_000_000)
@@ -1043,28 +1060,34 @@ pub extern "C" fn select_handler(
         }
 
         if have_r {
-            let _ = copy_data_between_cages(
+            if copy_data_between_cages(
                 this_cage, arg1cage,
                 ipc_read.as_ptr() as u64, this_cage,
                 arg2, arg1cage,
                 FD_SET_BYTES as u64, 0,
-            );
+            ).is_err() {
+                return -14; // EFAULT: the copy to/from the cage failed
+            }
         }
         if have_w {
-            let _ = copy_data_between_cages(
+            if copy_data_between_cages(
                 this_cage, arg1cage,
                 ipc_write.as_ptr() as u64, this_cage,
                 arg3, arg1cage,
                 FD_SET_BYTES as u64, 0,
-            );
+            ).is_err() {
+                return -14; // EFAULT: the copy to/from the cage failed
+            }
         }
         if have_e {
-            let _ = copy_data_between_cages(
+            if copy_data_between_cages(
                 this_cage, arg1cage,
                 ipc_except.as_ptr() as u64, this_cage,
                 arg4, arg1cage,
                 FD_SET_BYTES as u64, 0,
-            );
+            ).is_err() {
+                return -14; // EFAULT: the copy to/from the cage failed
+            }
         }
         return ipc_ready;
     }
@@ -1113,30 +1136,36 @@ pub extern "C" fn select_handler(
 
     if have_r {
         for i in 0..FD_SET_WORDS { out_r[i] |= ipc_read[i]; }
-        let _ = copy_data_between_cages(
+        if copy_data_between_cages(
             this_cage, arg1cage,
             out_r.as_ptr() as u64, this_cage,
             arg2, arg1cage,
             FD_SET_BYTES as u64, 0,
-        );
+        ).is_err() {
+            return -14; // EFAULT: the copy to/from the cage failed
+        }
     }
     if have_w {
         for i in 0..FD_SET_WORDS { out_w[i] |= ipc_write[i]; }
-        let _ = copy_data_between_cages(
+        if copy_data_between_cages(
             this_cage, arg1cage,
             out_w.as_ptr() as u64, this_cage,
             arg3, arg1cage,
             FD_SET_BYTES as u64, 0,
-        );
+        ).is_err() {
+            return -14; // EFAULT: the copy to/from the cage failed
+        }
     }
     if have_e {
         for i in 0..FD_SET_WORDS { out_e[i] |= ipc_except[i]; }
-        let _ = copy_data_between_cages(
+        if copy_data_between_cages(
             this_cage, arg1cage,
             out_e.as_ptr() as u64, this_cage,
             arg4, arg1cage,
             FD_SET_BYTES as u64, 0,
-        );
+        ).is_err() {
+            return -14; // EFAULT: the copy to/from the cage failed
+        }
     }
 
     kernel_ret + ipc_ready
@@ -1904,12 +1933,14 @@ pub extern "C" fn socketpair_handler(
 
     // Write the two fds back to the cage's sv[2] array.
     let sv: [i32; 2] = [fd1, fd2];
-    let _ = copy_data_between_cages(
+    if copy_data_between_cages(
         this_cage, arg4cage,
         sv.as_ptr() as u64, this_cage,
         arg4, arg4cage,
         8, 0,
-    );
+    ).is_err() {
+        return -14; // EFAULT: the copy to/from the cage failed
+    }
 
     0
 }
@@ -1941,12 +1972,14 @@ pub extern "C" fn bind_handler(
         return forward_with_fd1(SYS_BIND, cage_id, args, arg_cages);
     }
     let mut addr_buf = vec![0u8; addrlen];
-    let _ = copy_data_between_cages(
+    if copy_data_between_cages(
         this_cage, arg2cage,
         arg2, arg2cage,
         addr_buf.as_mut_ptr() as u64, this_cage,
         addrlen as u64, 0,
-    );
+    ).is_err() {
+        return -14; // EFAULT: the copy to/from the cage failed
+    }
 
     let family = u16::from_le_bytes([addr_buf[0], addr_buf[1]]) as i32;
 
@@ -2118,12 +2151,14 @@ pub extern "C" fn connect_handler(
         return forward_with_fd1(SYS_CONNECT, cage_id, args, arg_cages);
     }
     let mut addr_buf = vec![0u8; addrlen];
-    let _ = copy_data_between_cages(
+    if copy_data_between_cages(
         this_cage, arg2cage,
         arg2, arg2cage,
         addr_buf.as_mut_ptr() as u64, this_cage,
         addrlen as u64, 0,
-    );
+    ).is_err() {
+        return -14; // EFAULT: the copy to/from the cage failed
+    }
 
     let family = u16::from_le_bytes([addr_buf[0], addr_buf[1]]) as i32;
 
@@ -2608,12 +2643,14 @@ pub extern "C" fn epoll_ctl_handler(
                     return -22; // EINVAL
                 }
                 let mut ev = ipc::EpollEvent::default();
-                let _ = copy_data_between_cages(
+                if copy_data_between_cages(
                     this_cage, arg1cage,
                     arg4, arg4cage,
                     &mut ev as *mut _ as u64, this_cage,
                     core::mem::size_of::<ipc::EpollEvent>() as u64, 0,
-                );
+                ).is_err() {
+                    return -14; // EFAULT: the copy to/from the cage failed
+                }
                 with_ipc(|s| {
                     let entry = s.epoll_targets
                         .entry((cage_id, grate_epfd))
@@ -2774,12 +2811,14 @@ pub extern "C" fn epoll_wait_handler(
     let total = ready.len();
     if total > 0 && arg2 != 0 {
         let bytes = (total * core::mem::size_of::<ipc::EpollEvent>()) as u64;
-        let _ = copy_data_between_cages(
+        if copy_data_between_cages(
             this_cage, arg2cage,
             ready.as_ptr() as u64, this_cage,
             arg2, arg2cage,
             bytes, 0,
-        );
+        ).is_err() {
+            return -14; // EFAULT: the copy to/from the cage failed
+        }
     }
     total as i32
 }
@@ -2807,10 +2846,12 @@ pub extern "C" fn ppoll_handler(
 
     let mut pollfds = vec![PollFd::default(); nfds];
     let bytes = (nfds * core::mem::size_of::<PollFd>()) as u64;
-    let _ = copy_data_between_cages(
+    if copy_data_between_cages(
         this_cage, arg1cage, arg1, arg1cage,
         pollfds.as_mut_ptr() as u64, this_cage, bytes, 0,
-    );
+    ).is_err() {
+        return -14; // EFAULT: the copy to/from the cage failed
+    }
 
     let original_fds: Vec<i32> = pollfds.iter().map(|p| p.fd).collect();
     let mut ipc_revents: Vec<i16> = vec![0; nfds];
@@ -2877,10 +2918,12 @@ pub extern "C" fn ppoll_handler(
     // pollfd[] back to the cage so the user sees its own grate vfds.
     for i in 0..nfds { pollfds[i].fd = original_fds[i]; }
     for i in &ipc_indices { pollfds[*i].revents = ipc_revents[*i]; }
-    let _ = copy_data_between_cages(
+    if copy_data_between_cages(
         this_cage, arg1cage,
         pollfds.as_ptr() as u64, this_cage, arg1, arg1cage, bytes, 0,
-    );
+    ).is_err() {
+        return -14; // EFAULT: the copy to/from the cage failed
+    }
 
     total_ready
 }
@@ -3015,7 +3058,11 @@ pub extern "C" fn recvfrom_handler(
     // "no peer address available" rather than uninitialized bytes.
     if ret >= 0 && arg6 != 0 {
         let zero: u32 = 0;
-        write_user_bytes(arg6, arg6cage, &zero as *const u32 as *const u8, 4);
+        // The bytes were already consumed from the pipe, as in Linux when the
+        // address copy-out fails afterwards: report the fault.
+        if let Err(e) = write_user_bytes(arg6, arg6cage, &zero as *const u32 as *const u8, 4) {
+            return e;
+        }
     }
     ret
 }
@@ -3058,12 +3105,14 @@ pub extern "C" fn sendmsg_handler(
 
     // Pull the msghdr (56 bytes) out of the user cage.
     let mut hdr = HostMsghdr::default();
-    let _ = copy_data_between_cages(
+    if copy_data_between_cages(
         this_cage, arg2cage,
         arg2, arg2cage,
         &mut hdr as *mut _ as u64, this_cage,
         core::mem::size_of::<HostMsghdr>() as u64, 0,
-    );
+    ).is_err() {
+        return -14; // EFAULT: the copy to/from the cage failed
+    }
 
     let iov_count = hdr.msg_iovlen as usize;
     if iov_count == 0 {
@@ -3080,21 +3129,25 @@ pub extern "C" fn sendmsg_handler(
     for i in 0..iov_count {
         let mut iov = HostIovec::default();
         let entry_addr = hdr.msg_iov.wrapping_add((i as u64) * 16);
-        let _ = copy_data_between_cages(
+        if copy_data_between_cages(
             this_cage, arg2cage,
             entry_addr, arg2cage,
             &mut iov as *mut _ as u64, this_cage,
             core::mem::size_of::<HostIovec>() as u64, 0,
-        );
+        ).is_err() {
+            return -14; // EFAULT: the copy to/from the cage failed
+        }
         let len = iov.iov_len as usize;
         if len == 0 { continue; }
         let mut chunk = vec![0u8; len];
-        let _ = copy_data_between_cages(
+        if copy_data_between_cages(
             this_cage, arg2cage,
             iov.iov_base, arg2cage,
             chunk.as_mut_ptr() as u64, this_cage,
             len as u64, 0,
-        );
+        ).is_err() {
+            return -14; // EFAULT: the copy to/from the cage failed
+        }
         gathered.extend_from_slice(&chunk);
     }
 
@@ -3144,12 +3197,14 @@ pub extern "C" fn recvmsg_handler(
     // Pull the msghdr in from the user cage and walk the iov array
     // up front to compute total recv capacity.
     let mut hdr = HostMsghdr::default();
-    let _ = copy_data_between_cages(
+    if copy_data_between_cages(
         this_cage, arg2cage,
         arg2, arg2cage,
         &mut hdr as *mut _ as u64, this_cage,
         core::mem::size_of::<HostMsghdr>() as u64, 0,
-    );
+    ).is_err() {
+        return -14; // EFAULT: the copy to/from the cage failed
+    }
 
     let iov_count = hdr.msg_iovlen as usize;
     if iov_count == 0 {
@@ -3164,12 +3219,14 @@ pub extern "C" fn recvmsg_handler(
     for i in 0..iov_count {
         let mut iov = HostIovec::default();
         let entry_addr = hdr.msg_iov.wrapping_add((i as u64) * 16);
-        let _ = copy_data_between_cages(
+        if copy_data_between_cages(
             this_cage, arg2cage,
             entry_addr, arg2cage,
             &mut iov as *mut _ as u64, this_cage,
             core::mem::size_of::<HostIovec>() as u64, 0,
-        );
+        ).is_err() {
+            return -14; // EFAULT: the copy to/from the cage failed
+        }
         total_capacity = total_capacity.saturating_add(iov.iov_len as usize);
         iovs.push(iov);
     }
@@ -3190,12 +3247,14 @@ pub extern "C" fn recvmsg_handler(
         if remaining == 0 { break; }
         let chunk = core::cmp::min(iov.iov_len as usize, remaining);
         if chunk == 0 { continue; }
-        let _ = copy_data_between_cages(
+        if copy_data_between_cages(
             this_cage, arg2cage,
             buf.as_ptr().wrapping_add(offset) as u64, this_cage,
             iov.iov_base, arg2cage,
             chunk as u64, 0,
-        );
+        ).is_err() {
+            return -14; // EFAULT: the copy to/from the cage failed
+        }
         offset += chunk;
         remaining -= chunk;
     }
@@ -3310,13 +3369,19 @@ pub extern "C" fn getsockopt_handler(
         return -22; // EINVAL
     }
     let mut user_optlen: u32 = 0;
-    read_user_bytes(arg5, arg5cage, &mut user_optlen as *mut u32 as *mut u8, 4);
+    if let Err(e) = read_user_bytes(arg5, arg5cage, &mut user_optlen as *mut u32 as *mut u8, 4) {
+        return e;
+    }
     let write_bytes = core::cmp::min(user_optlen, 4) as u64;
     if write_bytes > 0 {
-        write_user_bytes(arg4, arg4cage, &val as *const i32 as *const u8, write_bytes as usize);
+        if let Err(e) = write_user_bytes(arg4, arg4cage, &val as *const i32 as *const u8, write_bytes as usize) {
+            return e;
+        }
     }
     let four: u32 = 4;
-    write_user_bytes(arg5, arg5cage, &four as *const u32 as *const u8, 4);
+    if let Err(e) = write_user_bytes(arg5, arg5cage, &four as *const u32 as *const u8, 4) {
+        return e;
+    }
     0
 }
 
@@ -3376,12 +3441,18 @@ fn ipc_writeback_sockaddr(
         return -22; // EINVAL
     }
     let mut user_addrlen: u32 = 0;
-    read_user_bytes(addrlen_arg, addrlen_cage, &mut user_addrlen as *mut u32 as *mut u8, 4);
+    if let Err(e) = read_user_bytes(addrlen_arg, addrlen_cage, &mut user_addrlen as *mut u32 as *mut u8, 4) {
+        return e;
+    }
     let copy_len = core::cmp::min(sock_len, user_addrlen);
     if copy_len > 0 {
-        write_user_bytes(addr_arg, addr_cage, sock_buf.as_ptr(), copy_len as usize);
+        if let Err(e) = write_user_bytes(addr_arg, addr_cage, sock_buf.as_ptr(), copy_len as usize) {
+            return e;
+        }
     }
-    write_user_bytes(addrlen_arg, addrlen_cage, &sock_len as *const u32 as *const u8, 4);
+    if let Err(e) = write_user_bytes(addrlen_arg, addrlen_cage, &sock_len as *const u32 as *const u8, 4) {
+        return e;
+    }
     0
 }
 
@@ -3473,21 +3544,25 @@ fn gather_iov_into_buf(
     for i in 0..iovcnt {
         let mut iov = HostIovec::default();
         let entry_addr = iov_ptr.wrapping_add((i as u64) * 16);
-        let _ = copy_data_between_cages(
+        if copy_data_between_cages(
             this_cage, iov_cage,
             entry_addr, iov_cage,
             &mut iov as *mut _ as u64, this_cage,
             core::mem::size_of::<HostIovec>() as u64, 0,
-        );
+        ).is_err() {
+            return Err(-14); // EFAULT: the copy to/from the cage failed
+        }
         let len = iov.iov_len as usize;
         if len == 0 { continue; }
         let mut chunk = vec![0u8; len];
-        let _ = copy_data_between_cages(
+        if copy_data_between_cages(
             this_cage, iov_cage,
             iov.iov_base, iov_cage,
             chunk.as_mut_ptr() as u64, this_cage,
             len as u64, 0,
-        );
+        ).is_err() {
+            return Err(-14); // EFAULT: the copy to/from the cage failed
+        }
         gathered.extend_from_slice(&chunk);
     }
     Ok(gathered)
@@ -3507,20 +3582,24 @@ fn scatter_buf_into_iov(
         if remaining == 0 { break; }
         let mut iov = HostIovec::default();
         let entry_addr = iov_ptr.wrapping_add((i as u64) * 16);
-        let _ = copy_data_between_cages(
+        if copy_data_between_cages(
             this_cage, iov_cage,
             entry_addr, iov_cage,
             &mut iov as *mut _ as u64, this_cage,
             core::mem::size_of::<HostIovec>() as u64, 0,
-        );
+        ).is_err() {
+            return Err(-14); // EFAULT: the copy to/from the cage failed
+        }
         let chunk = core::cmp::min(iov.iov_len as usize, remaining);
         if chunk == 0 { continue; }
-        let _ = copy_data_between_cages(
+        if copy_data_between_cages(
             this_cage, iov_cage,
             data.as_ptr().wrapping_add(written) as u64, this_cage,
             iov.iov_base, iov_cage,
             chunk as u64, 0,
-        );
+        ).is_err() {
+            return Err(-14); // EFAULT: the copy to/from the cage failed
+        }
         written += chunk;
         remaining -= chunk;
     }
@@ -3615,12 +3694,14 @@ pub extern "C" fn readv_handler(
     for i in 0..iovcnt {
         let mut iov = HostIovec::default();
         let entry_addr = arg2.wrapping_add((i as u64) * 16);
-        let _ = copy_data_between_cages(
+        if copy_data_between_cages(
             this_cage, arg2cage,
             entry_addr, arg2cage,
             &mut iov as *mut _ as u64, this_cage,
             core::mem::size_of::<HostIovec>() as u64, 0,
-        );
+        ).is_err() {
+            return -14; // EFAULT: the copy to/from the cage failed
+        }
         iov_lens.push(iov.iov_len as usize);
         total_capacity = total_capacity.saturating_add(iov.iov_len as usize);
     }
@@ -3670,7 +3751,11 @@ pub extern "C" fn ioctl_handler(
             // *argp is an int: nonzero = set O_NONBLOCK, zero = clear.
             if arg3 == 0 { return -22; }
             let mut user_val: i32 = 0;
-            read_user_bytes(arg3, arg3cage, &mut user_val as *mut i32 as *mut u8, 4);
+            // Read the request before changing any state: a failed copy must
+            // not be treated as "clear O_NONBLOCK".
+            if let Err(e) = read_user_bytes(arg3, arg3cage, &mut user_val as *mut i32 as *mut u8, 4) {
+                return e;
+            }
             let new_flags = if user_val != 0 {
                 (flags as u64) | (O_NONBLOCK as u64)
             } else {
@@ -3701,7 +3786,9 @@ pub extern "C" fn ioctl_handler(
                 }),
                 _ => 0,
             };
-            write_user_bytes(arg3, arg3cage, &avail as *const i32 as *const u8, 4);
+            if let Err(e) = write_user_bytes(arg3, arg3cage, &avail as *const i32 as *const u8, 4) {
+                return e;
+            }
             0
         }
         _ => -25, // ENOTTY — ioctl request not supported on IPC fds
@@ -3750,7 +3837,9 @@ pub extern "C" fn fstat_handler(
         _ => return -22,
     };
     buf[ST_MODE_OFFSET..ST_MODE_OFFSET + 4].copy_from_slice(&mode.to_le_bytes());
-    write_user_bytes(arg2, arg2cage, buf.as_ptr(), STAT_SIZE);
+    if let Err(e) = write_user_bytes(arg2, arg2cage, buf.as_ptr(), STAT_SIZE) {
+        return e;
+    }
     0
 }
 

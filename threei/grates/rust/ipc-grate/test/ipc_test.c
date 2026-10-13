@@ -1270,6 +1270,68 @@ static void test_uds_sockopt(void) {
     close(sv[1]);
 }
 
+/* ── Test: copy failures are reported, not swallowed ─────────────── */
+/* An address outside the cage's memory cannot be copied to or from. The
+   grate must answer EFAULT (and not act on fabricated bytes) instead of
+   reporting success with nothing transferred. */
+static void test_bad_user_pointers(void) {
+    printf("\n[test_bad_user_pointers]\n");
+    /* A buffer that starts inside the sandbox but runs past its end: the copy API refuses it.
+       (Every 64-bit pointer is truncated into the sandbox, so "outside" can only mean this.) */
+    void *bad = (void *)0xFFFFFFFEUL;
+
+    int p[2];
+    CHECK("pipe()", pipe(p) == 0);
+
+    /* (fstat with a bad buffer is not tested: musl routes it through fstatat, which reaches
+       the runtime's own handler; guest-memory fault containment there is a separate issue.) */
+    int r;
+
+    /* ioctl FIONBIO with an unreadable argument must not change the flag */
+    int fl0 = fcntl(p[0], F_GETFL);
+    errno = 0;
+    r = ioctl(p[0], FIONBIO, bad);
+    CHECK("ioctl(FIONBIO, bad ptr) fails with EFAULT", r == -1 && errno == EFAULT);
+    int fl1 = fcntl(p[0], F_GETFL);
+    CHECK("failed FIONBIO left O_NONBLOCK unchanged", (fl0 & O_NONBLOCK) == (fl1 & O_NONBLOCK));
+
+    /* FIONREAD output */
+    errno = 0;
+    r = ioctl(p[0], FIONREAD, bad);
+    CHECK("ioctl(FIONREAD, bad ptr) fails with EFAULT", r == -1 && errno == EFAULT);
+
+    /* pipe read/write with a bad buffer */
+    errno = 0;
+    CHECK("write from bad buffer fails with EFAULT", write(p[1], bad, 4) == -1 && errno == EFAULT);
+    CHECK("write(valid)", write(p[1], "abcd", 4) == 4);
+    errno = 0;
+    CHECK("read into bad buffer fails with EFAULT", read(p[0], bad, 4) == -1 && errno == EFAULT);
+    char buf[8] = {0};
+    CHECK("the unread bytes are still in the pipe", read(p[0], buf, 4) == 4 && memcmp(buf, "abcd", 4) == 0);
+
+    /* socket option / address outputs */
+    int sv[2];
+    CHECK("socketpair", socketpair(AF_UNIX, SOCK_STREAM, 0, sv) == 0);
+    int type = -1;
+    socklen_t tlen = sizeof(type);
+    errno = 0;
+    r = getsockopt(sv[0], SOL_SOCKET, SO_TYPE, bad, &tlen);
+    CHECK("getsockopt(bad optval) fails with EFAULT", r == -1 && errno == EFAULT);
+    errno = 0;
+    r = getsockopt(sv[0], SOL_SOCKET, SO_TYPE, &type, (socklen_t *)bad);
+    CHECK("getsockopt(bad optlen) fails with EFAULT", r == -1 && errno == EFAULT);
+    tlen = sizeof(type);
+    r = getsockopt(sv[0], SOL_SOCKET, SO_TYPE, &type, &tlen);
+    CHECK("getsockopt(valid) still works", r == 0 && type == SOCK_STREAM);
+    struct sockaddr_un sa;
+    socklen_t sl = sizeof(sa);
+    errno = 0;
+    r = getsockname(sv[0], (struct sockaddr *)bad, &sl);
+    CHECK("getsockname(bad addr) fails with EFAULT", r == -1 && errno == EFAULT);
+
+    close(p[0]); close(p[1]); close(sv[0]); close(sv[1]);
+}
+
 /* ── Test: setsockopt/getsockopt on a regular AF_INET socket ──────── */
 /* AF_INET sockets without loopback target are FDKIND_KERNEL in the
    grate's fdtable; setsockopt/getsockopt translates to the runtime
@@ -1632,6 +1694,7 @@ static void test_dirfd_syscall_translation(void) {
 /* ── Main ──────────────────────────────────────────────────────────── */
 
 int main(void) {
+    setvbuf(stdout, NULL, _IONBF, 0);   /* keep the output if the cage dies mid-test */
     printf("=== ipc grate test ===\n");
 
     test_pipe_basic();
@@ -1654,6 +1717,7 @@ int main(void) {
     test_file_io_basic();
     test_fd_collision_after_exec();
     test_large_pipe_correctness();
+    test_bad_user_pointers();
 
     /* fcntl / cloexec regression coverage */
     test_fcntl_setfl_preservation();

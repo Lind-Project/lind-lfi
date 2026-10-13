@@ -1,5 +1,6 @@
 #include "seccomp.h"
 #include <semaphore.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/mman.h>
@@ -42,12 +43,36 @@ int main(int argc, char *argv[]) {
   // get the memory address of blacklist_handler
   uint64_t fn_ptr = (uint64_t)(uintptr_t)&blacklist_handler;
 
+  subject_cage = (uint64_t)cageid;
+
+  // Protection must be complete before the cage runs: if any registration
+  // fails, kill the cage rather than let it run partly unconfined.
+#define MUST(call)                                                             \
+  do {                                                                         \
+    int r_ = (call);                                                           \
+    if (r_ != 0) {                                                             \
+      fprintf(stderr, "seccomp-grate: registration failed (%d): %s\n", r_,     \
+              #call);                                                          \
+      kill(cageid, SIGKILL);                                                   \
+      return EXIT_FAILURE;                                                     \
+    }                                                                          \
+  } while (0)
+
   // loop to register blacklisted syscall handlers
   for (int i = 0; i < MAX_SYSCALLS; i++) {
     if (syscall_mode[i] == BL) {
-      register_handler(cageid, i, grateid, fn_ptr);
+      MUST(register_handler(cageid, i, grateid, fn_ptr));
     }
   }
+  // Linux call numbers beyond the config's range follow its default rule.
+  for (int i = MAX_SYSCALLS; i < SEC_LINUX_SLOTS; i++)
+    if (default_rule == BL)
+      MUST(register_handler(cageid, i, grateid, fn_ptr));
+  // The routing operations themselves.
+  MUST(register_handler(cageid, SEC_SYS_REGISTER, grateid,
+                        (uint64_t)(uintptr_t)&register_guard_handler));
+  MUST(register_handler(cageid, SEC_SYS_COPY_HTAB, grateid,
+                        (uint64_t)(uintptr_t)&copy_htab_guard_handler));
 
   // resume execution of the cage
   sem_post(sem);

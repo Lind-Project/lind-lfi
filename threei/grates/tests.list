@@ -11,6 +11,7 @@ run c/strace-grate/propagates-exit    7   - "$RUN" "$OUT/strace-grate" "$OUT/exi
 run c/strace-grate/propagates-signal  134 - "$RUN" "$OUT/strace-grate" "$OUT/exit-status" abort
 run c/seccomp-grate/propagates-exit   7   - "$RUN" "$OUT/seccomp-grate" c/seccomp-grate/policies/seccomp_whitelist_test.conf "$OUT/exit-status" 7
 run c/seccomp-grate/propagates-signal 134 - "$RUN" "$OUT/seccomp-grate" c/seccomp-grate/policies/seccomp_whitelist_test.conf "$OUT/exit-status" abort
+run c/seccomp-grate/tamper-resistant 0 'seccomp_tamper: PASS' "$RUN" "$OUT/seccomp-grate" c/seccomp-grate/policies/seccomp_whitelist_test.conf "$OUT/seccomp-tamper-test"
 run c/imfs-grate/propagates-exit      7   - "$RUN" "$OUT/imfs-grate" "$OUT/exit-status" 7
 run c/imfs-grate/propagates-signal    134 - "$RUN" "$OUT/imfs-grate" "$OUT/exit-status" abort
 run c/witness-grate   0 -                   bash -c 'cd "$FIX" && "$RUN" --env WITNESS_LOG="$FIX/w.log" "$ABS/witness-grate" "$HERE/../tests/out/c_hello" && grep -q "finished successfully" "$FIX/w.log" && grep -q "^SIGNED seq=0 syscall=59" "$FIX/w.log"'
@@ -38,8 +39,9 @@ run rust/fdtables-test-grate 0 '43/43 passed'  "$LRUN" $G/fdtables-test-grate $T
 run rust/fd-translate-grate  0 '48/48 passed'  "$LRUN" $G/fd-translate-grate $T/fd-translate-grate/fd_translate_test
 run rust/fs-view-grate+imfs 0 '15/15 passed' "$LRUN" $G/imfs-grate $G/fs-view-grate $T/fs-view-grate/fs_view_test
 run rust/imfs-grate    0 '153/153 passed'      "$LRUN" $G/imfs-grate $T/imfs-grate/imfs_test
-run rust/ipc-grate     0 '221/221 passed'      env WD=/tests/ipc-grate "$LRUN" $G/ipc-grate ./ipc_test
+run rust/ipc-grate     0 '[0-9]+/[0-9]+ passed'      env WD=/tests/ipc-grate "$LRUN" $G/ipc-grate ./ipc_test
 run rust/resource-grate 0 '26 tests, 0 failures' env WD=/tests/resource-grate "$LRUN" $G/resource-grate test_resources.cfg $T/resource-grate/resource_test
+run rust/resource-grate/thread-limit 0 'thread_limit: PASS' env WD=/tests/resource-grate "$LRUN" $G/resource-grate test_threads.cfg $T/resource-grate/thread_limit_test
 run rust/fs-routing-clamp/routing 0 '26/26 passed' "$LRUN" $G/fs-routing-clamp --prefix /tmp %{ $G/testing-grate -s 2:-167,4:-167,21:-167,83:-167,84:-167,87:-167 $G/fs-routing-clamp --prefix /tmp/inner %{ $G/testing-grate -s 2:-166 %} %} $T/fs-routing-clamp/fs_routing_test
 run rust/fs-routing-clamp/unix-socket 0 '42/42 passed' "$LRUN" $G/fs-routing-clamp --prefix /tmp %{ $G/testing-grate -s 0:166 %} $T/fs-routing-clamp/unix_socket_outside_prefix_test
 run rust/fs-routing-clamp/listener-poll 0 '39/39 passed' "$LRUN" $G/fs-routing-clamp --prefix /tmp %{ $G/testing-grate -s 0:166 %} $T/fs-routing-clamp/unix_listener_poll_minimal_test

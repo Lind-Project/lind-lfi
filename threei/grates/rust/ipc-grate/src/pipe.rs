@@ -220,6 +220,7 @@ impl PipeBuffer {
 
         let mut total_written = 0usize;
         while total_written < count {
+            let mut copy_failed = false;
             let want = count - total_written;
             let cur_src = src_addr + total_written as u64;
 
@@ -228,9 +229,10 @@ impl PipeBuffer {
                 (*self.producer.get()).push_access(|left, right| {
                     let mut n = 0usize;
 
+                    // A chunk whose copy fails is not committed to the pipe.
                     let n_left = want.min(left.len());
                     if n_left > 0 {
-                        let _ = copy_data_between_cages(
+                        if copy_data_between_cages(
                             this_cage,
                             src_cage,
                             cur_src,
@@ -239,13 +241,16 @@ impl PipeBuffer {
                             this_cage,
                             n_left as u64,
                             0,
-                        );
+                        ).is_err() {
+                            copy_failed = true;
+                            return n;
+                        }
                         n += n_left;
                     }
 
                     let n_right = (want - n).min(right.len());
                     if n_right > 0 {
-                        let _ = copy_data_between_cages(
+                        if copy_data_between_cages(
                             this_cage,
                             src_cage,
                             cur_src + n as u64,
@@ -254,7 +259,10 @@ impl PipeBuffer {
                             this_cage,
                             n_right as u64,
                             0,
-                        );
+                        ).is_err() {
+                            copy_failed = true;
+                            return n;
+                        }
                         n += n_right;
                     }
 
@@ -263,6 +271,10 @@ impl PipeBuffer {
             };
 
             total_written += pushed;
+            if copy_failed {
+                // Bytes already pushed count; with none, the write faults.
+                return if total_written > 0 { total_written as i32 } else { -14 }; // EFAULT
+            }
             if total_written >= count {
                 break;
             }
@@ -311,15 +323,17 @@ impl PipeBuffer {
         }
 
         loop {
+            let mut copy_failed = false;
             // SAFETY: SPSC contract — only the reader thread accesses the consumer.
             let popped = unsafe {
                 (*self.consumer.get()).pop_access(|left, right| {
                     let mut n = 0usize;
                     let want = count;
 
+                    // Bytes whose copy to the reader fails stay in the pipe.
                     let n_left = want.min(left.len());
                     if n_left > 0 {
-                        let _ = copy_data_between_cages(
+                        if copy_data_between_cages(
                             this_cage,
                             dst_cage,
                             left.as_ptr() as u64,
@@ -328,13 +342,16 @@ impl PipeBuffer {
                             dst_cage,
                             n_left as u64,
                             0,
-                        );
+                        ).is_err() {
+                            copy_failed = true;
+                            return n;
+                        }
                         n += n_left;
                     }
 
                     let n_right = (want - n).min(right.len());
                     if n_right > 0 {
-                        let _ = copy_data_between_cages(
+                        if copy_data_between_cages(
                             this_cage,
                             dst_cage,
                             right.as_ptr() as u64,
@@ -343,7 +360,10 @@ impl PipeBuffer {
                             dst_cage,
                             n_right as u64,
                             0,
-                        );
+                        ).is_err() {
+                            copy_failed = true;
+                            return n;
+                        }
                         n += n_right;
                     }
 
@@ -353,6 +373,9 @@ impl PipeBuffer {
 
             if popped > 0 {
                 return popped as i32;
+            }
+            if copy_failed {
+                return -14; // EFAULT
             }
 
             // Buffer empty — check EOF, then nonblocking / signal semantics.

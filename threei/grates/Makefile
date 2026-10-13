@@ -20,7 +20,7 @@ OUT    := out
 LINK = $(LFICC) $(CFLAGS) $(INC) -static-pie -o $@ $(filter %.c,$^)
 
 GRATES := geteuid-grate strace-grate seccomp-grate witness-grate imfs-grate
-TESTS  := geteuid-test strace-test seccomp-chmod-test witness-exit-failure imfs-test exit-status
+TESTS  := geteuid-test strace-test seccomp-chmod-test witness-exit-failure imfs-test exit-status seccomp-tamper-test
 
 all: $(addprefix $(OUT)/,$(GRATES) $(TESTS))
 
@@ -50,6 +50,8 @@ $(OUT)/seccomp-chmod-test: c/seccomp-grate/test/seccomp_chmod_test.c | $(OUT)
 $(OUT)/witness-exit-failure: c/witness-grate/tests/exit_failure.c | $(OUT)
 	$(LINK)
 $(OUT)/imfs-test: c/imfs-grate/test/imfs-test.c | $(OUT)
+	$(LINK)
+$(OUT)/seccomp-tamper-test: c/seccomp-grate/test/seccomp_tamper_test.c $(SHIM) | $(OUT)
 	$(LINK)
 $(OUT)/exit-status: c/test-common/exit_status.c | $(OUT)
 	$(LINK)

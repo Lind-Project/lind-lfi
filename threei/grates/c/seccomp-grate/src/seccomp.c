@@ -17,6 +17,48 @@ int blacklist_handler(uint64_t cageid, uint64_t arg1, uint64_t arg1cage,
   return -EPERM;
 }
 
+uint64_t subject_cage;
+seccomp_mode_t default_rule = BL; // the config's [default]; applies to numbers it does not cover
+
+int slot_is_protected(uint64_t callnum) {
+  if (callnum == SEC_SYS_REGISTER || callnum == SEC_SYS_COPY_HTAB)
+    return 1;
+  if (callnum < MAX_SYSCALLS)
+    return syscall_mode[callnum] == BL;
+  // Linux numbers beyond the config's range follow the config's default rule.
+  return callnum < SEC_LINUX_SLOTS && default_rule == BL;
+}
+
+// register_handler(target = arg1, call number = arg1cage, grate = arg2cage, fn = arg3)
+//
+// The subject's own table is frozen (see below). For its descendants a slot that carries a
+// denial (or one of the two guards: clamp grates interpose on their children's
+// routing calls) can be re-pointed, but only at a handler inside the subject's
+// subtree (the runtime checks the registration against the subject's own rights
+// too), never emptied and never pointed at this grate: every cage below the
+// subject then still reaches the host only through confined cages' tables.
+int register_guard_handler(SEC_GUARD_ARGS) {
+  // The subject's own table is frozen except for alternate call numbers, which
+  // clamp grates allocate as routes: those are reached only by an explicit
+  // make_threei_call, never by the subject's ordinary system calls.
+  if ((arg1 == subject_cage && arg1cage < SEC_ALT_BASE) || arg2cage == cageid)
+    return -EPERM;
+  if (arg2cage == SEC_DEREGISTER && slot_is_protected(arg1cage))
+    return -EPERM;
+  return make_threei_call(SEC_SYS_REGISTER, 0, cageid, subject_cage, arg1,
+                          arg1cage, arg2, arg2cage, arg3, arg3cage, arg4,
+                          arg4cage, arg5, arg5cage, arg6, arg6cage, 0);
+}
+
+// copy_handler_table_to_cage(source = arg1, destination = arg1cage)
+int copy_htab_guard_handler(SEC_GUARD_ARGS) {
+  if (arg1 != subject_cage || arg1cage == subject_cage)
+    return -EPERM;
+  return make_threei_call(SEC_SYS_COPY_HTAB, 0, cageid, subject_cage, arg1,
+                          arg1cage, arg2, arg2cage, arg3, arg3cage, arg4,
+                          arg4cage, arg5, arg5cage, arg6, arg6cage, 0);
+}
+
 // creates syscall map
 static const syscall_entry_t syscall_map[] = {
 #define X(name, num) {"SYS_" #name, num},
@@ -144,6 +186,7 @@ void parse_config(const char *filename) {
   }
   fclose(fp);
 
+  default_rule = default_mode;
   // backfill unconfigured syscalls with the default rule
   for (int i = 0; i < MAX_SYSCALLS; i++) {
     if (!explicitly_set[i]) {

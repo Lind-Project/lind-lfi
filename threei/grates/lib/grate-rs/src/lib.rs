@@ -213,8 +213,11 @@ pub fn copy_data_between_cages(
         )
     };
 
-    // 3i::copy_data_between_cages returns ELINDAPIABORTED for every error.
-    match ret as u64 {
+    // 3i::copy_data_between_cages returns ELINDAPIABORTED for every error. The C
+    // function returns an int, so 0xE0010001 arrives as a negative i32: compare
+    // it as the unsigned 32-bit value (casting the i32 straight to u64 would
+    // sign-extend it and never match, turning every failure into Ok).
+    match ret as u32 as u64 {
         ELINDAPIABORTED => Err(GrateError::CopyDataError(ELINDAPIABORTED as i32)),
         _ => Ok(()),
     }
@@ -224,8 +227,8 @@ pub fn copy_data_between_cages(
 pub fn copy_handler_table_to_cage(srccage: u64, targetcage: u64) -> Result<(), GrateError> {
     let ret = unsafe { cp_handler_impl(srccage, targetcage) };
 
-    // 3i::copy_handler_table_to_cage returns ELINDAPIABORTED for every error.
-    match ret as u64 {
+    // 3i::copy_handler_table_to_cage returns ELINDAPIABORTED for every error (see above).
+    match ret as u32 as u64 {
         ELINDAPIABORTED => Err(GrateError::CopyHandlerError(ELINDAPIABORTED as i32)),
         _ => Ok(()),
     }
@@ -284,10 +287,20 @@ pub fn getcageid() -> u64 {
     unsafe { getpid_impl() as u64 }
 }
 
-/// Check whether a SYS_CLONE call is a thread creation (not a process fork).
+/// The flags of a SYS_CLONE call, as seen by a handler.
 ///
-/// In Lind, `arg1` of SYS_CLONE is a pointer to `struct clone_args` in the
-/// calling cage's memory. The `flags` field is the first u64 in the struct.
+/// ABI note (differs from Lind-Wasm): on LFI the runtime passes the native Linux
+/// `clone` flags value itself in `arg1` (fork and vfork are aliased to clone
+/// with `SIGCHLD` / `CLONE_VM | CLONE_VFORK | SIGCHLD`). In Lind `arg1` instead
+/// points to a `struct clone_args` in the calling cage's memory, whose first
+/// u64 is the flags. A handler forwards `arg1` unchanged, so both
+/// representations stay consistent through a grate chain. `arg1cage` is the
+/// cage tag of the call and is not used to interpret the flags.
+pub fn clone_flags(arg1: u64, _arg1cage: u64) -> u64 {
+    arg1
+}
+
+/// Check whether a SYS_CLONE call is a thread creation (not a process fork).
 ///
 /// We check `CLONE_THREAD` rather than `CLONE_VM` because `posix_spawn`
 /// (used by libc `popen`, `system`, etc.) issues
@@ -302,20 +315,8 @@ pub fn getcageid() -> u64 {
 ///
 /// Grates should only skip per-cage state copy on actual thread clones,
 /// not on vfork-style process spawns.
-pub fn is_thread_clone(clone_args_ptr: u64, clone_args_cage: u64) -> bool {
-    let grate_cage = getcageid();
-    let mut flags: u64 = 0;
-    let _ = copy_data_between_cages(
-        grate_cage,
-        clone_args_cage,
-        clone_args_ptr,
-        clone_args_cage,
-        &mut flags as *mut u64 as u64,
-        grate_cage,
-        8,
-        0,
-    );
-    (flags & constants::process::CLONE_THREAD) != 0
+pub fn is_thread_clone(arg1: u64, arg1cage: u64) -> bool {
+    (clone_flags(arg1, arg1cage) & constants::process::CLONE_THREAD) != 0
 }
 
 /// Dispatch function required by 3i to invoke registered syscall handlers.
