@@ -40,3 +40,9 @@ run sighandler        0 "$RUN" "$OUT/g_sighandler"
 run siglongjmp         0 "$RUN" "$OUT/g_siglongjmp"
 run harsh-exit         0 "$RUN" "$OUT/g_harsh" "$OUT/c_spin" "$OUT/c_hello"
 run shm               0 "$RUN" "$OUT/g_shm"
+run capture-abuse     0 "$RUN" "$OUT/g_capture" "$OUT/c_capture"
+# Signals between threads of one cage (the sender used to deadlock on the thread-list lock).
+run threadsig-handler 0   "$RUN" "$OUT/c_threadsig" handler
+run threadsig-ignored 0   "$RUN" "$OUT/c_threadsig" ignored
+run threadsig-fatal   138 "$RUN" "$OUT/c_threadsig" fatal
+run threadsig-race    0   "$RUN" "$OUT/c_threadsig" race

@@ -181,10 +181,16 @@ sig_kick(struct Cage *v)
     pthread_rwlock_unlock(&v->memlk);
 }
 
-// Makes 'sig' pending for thread 'th' (non-NULL, which the caller guarantees
-// stays valid) or for the cage.
-static void
-post(struct Cage *v, struct LFILinuxThread *th, int sig, int sender)
+// What a posted signal needs done once the caller no longer holds any lock.
+enum post_act { POST_NONE, POST_KICK, POST_TERM };
+
+// First half of post(): decides what happens to 'sig' and records it as
+// pending. This is the part that looks at thread 'th' (non-NULL, valid for the
+// duration of the call), so a caller that keeps 'th' valid only by holding the
+// process's thread-list lock runs it under that lock; it never takes that lock
+// itself.
+static enum post_act
+post_prepare(struct Cage *v, struct LFILinuxThread *th, int sig, int sender)
 {
     struct kact ka;
     pthread_mutex_lock(&v->siglk);
@@ -194,7 +200,7 @@ post(struct Cage *v, struct LFILinuxThread *th, int sig, int sender)
     // Signals that are ignored are discarded when generated.
     if (ka.handler == H_IGN ||
         (ka.handler == H_DFL && default_action(sig) == A_IGNORE))
-        return;
+        return POST_NONE;
 
     if (ka.handler == H_DFL) {
         // Fatal by default. SIGKILL cannot be blocked; for the others the
@@ -202,10 +208,8 @@ post(struct Cage *v, struct LFILinuxThread *th, int sig, int sender)
         struct LFILinuxThread *target = th ? th : v->main_t;
         bool blocked = target && sig != SIGKILL &&
             (target->sigmask & SIGBIT(sig));
-        if (!blocked) {
-            cage_terminate(v, sig);
-            return;
-        }
+        if (!blocked)
+            return POST_TERM;
     }
     if (th) {
         atomic_fetch_or(&th->sigpending, SIGBIT(sig));
@@ -213,7 +217,26 @@ post(struct Cage *v, struct LFILinuxThread *th, int sig, int sender)
         v->sender[sig] = sender;
         atomic_fetch_or(&v->pending, SIGBIT(sig));
     }
-    sig_kick(v);
+    return POST_KICK;
+}
+
+// Second half: wakes the cage's threads or terminates it. Both walk the
+// thread list (and take its lock), so no lock may be held here.
+static void
+post_finish(struct Cage *v, int sig, enum post_act act)
+{
+    if (act == POST_TERM)
+        cage_terminate(v, sig);
+    else if (act == POST_KICK)
+        sig_kick(v);
+}
+
+// Makes 'sig' pending for thread 'th' (non-NULL, which the caller guarantees
+// stays valid) or for the cage.
+static void
+post(struct Cage *v, struct LFILinuxThread *th, int sig, int sender)
+{
+    post_finish(v, sig, post_prepare(v, th, sig, sender));
 }
 
 // Sends 'sig' to the cage as a whole.
@@ -244,17 +267,23 @@ send_tid(struct Cage *v, struct LFILinuxThread *self, int tid, int sig,
     struct LFILinuxProc *p = v->proc;
     if (!p)
         return r;
-    LOCK_WITH_DEFER(&p->lk_threads, lk);
+    // The target thread is only guaranteed to exist while the list is locked,
+    // so everything that looks at it happens there; the wake-up (which takes
+    // the same, non-recursive, lock) happens after it is released.
+    enum post_act act = POST_NONE;
+    pthread_mutex_lock(&p->lk_threads);
     for (struct List *e = list_first(p->threads); e;
          e = list_next(p->threads, e)) {
         struct LFILinuxThread *t =
             LIST_CONTAINER(struct LFILinuxThread, threads_elem, e);
         if (t->tid == tid) {
-            post(v, t, sig, sender);
+            act = post_prepare(v, t, sig, sender);
             r = 0;
             break;
         }
     }
+    pthread_mutex_unlock(&p->lk_threads);
+    post_finish(v, sig, act);
     return r;
 }
 
