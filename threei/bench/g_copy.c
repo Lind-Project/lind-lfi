@@ -35,17 +35,26 @@ int main(int argc, char **argv)
     assert(read(up[0], &where, sizeof where) == sizeof where);
     static char buf[65536];
     const size_t sizes[] = { 1, 4096, 16384, 32768 };
+    int bad = 0;
     for (int s = 0; s < 4; s++) {
         size_t n = sizes[s];
         int reps = 200000;
+        // c_copy fills its buffer with 1; every copy must report success and deliver exactly that
+        memset(buf, 0, sizeof buf);
+        long r = copy_data_between_cages(grate, pid, where, pid, (uint64_t) (uintptr_t) buf, grate, n, 0);
+        for (size_t k = 0; k < n; k++) if (buf[k] != 1) { bad = 1; break; }
+        if (r < 0 || bad) { fprintf(stderr, "g_copy: first %zu B copy failed (ret %ld)\n", n, r); return 1; }
         for (int i = 0; i < 1000; i++)
-            copy_data_between_cages(grate, pid, where, pid, (uint64_t) (uintptr_t) buf, grate, n, 0);
+            if (copy_data_between_cages(grate, pid, where, pid, (uint64_t) (uintptr_t) buf, grate, n, 0) < 0) bad = 1;
         double t0 = now();
         for (int i = 0; i < reps; i++)
-            copy_data_between_cages(grate, pid, where, pid, (uint64_t) (uintptr_t) buf, grate, n, 0);
-        printf("copy_data_%zuB %.0f ns\n", n, (now() - t0) / reps);
+            if (copy_data_between_cages(grate, pid, where, pid, (uint64_t) (uintptr_t) buf, grate, n, 0) < 0) bad = 1;
+        double el = (now() - t0) / reps;
+        if (bad) { fprintf(stderr, "g_copy: a %zu B copy returned an error\n", n); return 1; }
+        printf("copy_data_%zuB %.0f ns\n", n, el);
     }
     assert(write(down[1], "x", 1) == 1);
-    waitpid(pid, NULL, 0);
+    int st;
+    if (waitpid(pid, &st, 0) != pid || !WIFEXITED(st) || WEXITSTATUS(st) != 0) { fprintf(stderr, "g_copy: child failed\n"); return 1; }
     return 0;
 }

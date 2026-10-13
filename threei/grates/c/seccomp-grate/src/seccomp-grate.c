@@ -54,10 +54,12 @@ int main(int argc, char *argv[]) {
 
   int status;
 
-  wait(&status);
+  // The grate's exit status is the cage's: a failed or signaled cage must fail the caller.
+  if (wait(&status) < 0)
+    return EXIT_FAILURE;
 
   sem_destroy(sem);
   munmap(sem, sizeof(*sem));
 
-  return 0;
+  return (WIFEXITED(status) ? WEXITSTATUS(status) : WIFSIGNALED(status) ? 128 + WTERMSIG(status) : 1);
 }

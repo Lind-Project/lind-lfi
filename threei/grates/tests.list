@@ -3,7 +3,16 @@ run c/geteuid-grate   0 'geteuid ret = 10'  "$RUN" "$OUT/geteuid-grate" "$OUT/ge
 run c/strace-grate    0 'write\('           "$RUN" "$OUT/strace-grate" "$OUT/strace-test"
 run c/seccomp-grate/whitelist 0 PASS        "$RUN" "$OUT/seccomp-grate" c/seccomp-grate/policies/seccomp_whitelist_test.conf "$OUT/seccomp-chmod-test"
 run c/seccomp-grate/blacklist 0 PASS        "$RUN" "$OUT/seccomp-grate" c/seccomp-grate/policies/seccomp_blacklist_lfi.conf "$OUT/seccomp-chmod-test"
-run c/imfs-grate      0 -                   "$RUN" "$OUT/imfs-grate" "$OUT/imfs-test"
+run c/imfs-grate      0 '[0-9]+/[0-9]+ Tests Passed'  "$RUN" "$OUT/imfs-grate" "$OUT/imfs-test"
+# A C grate must report its cage's failure: a nonzero exit or a fatal signal may not become exit 0.
+run c/geteuid-grate/propagates-exit   7   - "$RUN" "$OUT/geteuid-grate" "$OUT/exit-status" 7
+run c/geteuid-grate/propagates-signal 134 - "$RUN" "$OUT/geteuid-grate" "$OUT/exit-status" abort
+run c/strace-grate/propagates-exit    7   - "$RUN" "$OUT/strace-grate" "$OUT/exit-status" 7
+run c/strace-grate/propagates-signal  134 - "$RUN" "$OUT/strace-grate" "$OUT/exit-status" abort
+run c/seccomp-grate/propagates-exit   7   - "$RUN" "$OUT/seccomp-grate" c/seccomp-grate/policies/seccomp_whitelist_test.conf "$OUT/exit-status" 7
+run c/seccomp-grate/propagates-signal 134 - "$RUN" "$OUT/seccomp-grate" c/seccomp-grate/policies/seccomp_whitelist_test.conf "$OUT/exit-status" abort
+run c/imfs-grate/propagates-exit      7   - "$RUN" "$OUT/imfs-grate" "$OUT/exit-status" 7
+run c/imfs-grate/propagates-signal    134 - "$RUN" "$OUT/imfs-grate" "$OUT/exit-status" abort
 run c/witness-grate   0 -                   bash -c 'cd "$FIX" && "$RUN" --env WITNESS_LOG="$FIX/w.log" "$ABS/witness-grate" "$HERE/../tests/out/c_hello" && grep -q "finished successfully" "$FIX/w.log" && grep -q "^SIGNED seq=0 syscall=59" "$FIX/w.log"'
 run c/witness-grate/propagates-failure 77 - bash -c 'cd "$FIX" && "$RUN" --env WITNESS_LOG="$FIX/w2.log" "$ABS/witness-grate" "$ABS/witness-exit-failure"'
 
@@ -50,4 +59,6 @@ run demo/write-filter-ordering/filter-outside 0 - bash -c 'WD=/demos/write-filte
 # mtls-grate loads (it is verified when loaded); its mtls_propagation demo is
 # not run: the grate holds its session lock while rustls waits for the peer's
 # handshake, so a server and client served concurrently deadlock.
-run rust/mtls-grate/loads 0 'Usage' "$LRUN" $G/mtls-grate --help
+# NOT a functional mTLS test: the load/ prefix marks checks that only show the binary loads and
+# parses its arguments; run_tests.sh reports them separately from policy tests.
+run load/mtls-grate 0 'Usage' "$LRUN" $G/mtls-grate --help

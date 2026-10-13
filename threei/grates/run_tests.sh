@@ -36,7 +36,7 @@ export LRUN
 # witness-grate signs with a per-cage Ed25519 seed read from ./witness.seed
 head -c 32 /dev/urandom > "$FIX/witness.seed"
 FILTER=${1:-}
-pass=0; fail=0; failed=()
+pass=0; fail=0; loadonly=0; failed=()
 
 # run <name> <expected-exit> <required-output-regex|-> cmd...
 run() {
@@ -48,7 +48,9 @@ run() {
     local ok=1
     [ "$rc" = "$want" ] || ok=0
     if [ "$pat" != "-" ] && ! grep -Eq "$pat" "$log"; then ok=0; fi
-    if [ $ok = 1 ]; then
+    if [ $ok = 1 ] && [[ "$name" == load/* ]]; then
+        loadonly=$((loadonly+1)); printf 'LOAD  %s (load-only check, not a functional test)\n' "$name"
+    elif [ $ok = 1 ]; then
         pass=$((pass+1)); printf 'PASS  %s\n' "$name"
     else
         fail=$((fail+1)); failed+=("$name")
@@ -59,5 +61,5 @@ run() {
 }
 
 source ./tests.list
-echo; echo "passed: $pass  failed: $fail"
+echo; echo "passed: $pass  failed: $fail  (plus $loadonly load-only checks, not counted as passes)"
 [ ${#failed[@]} -eq 0 ] || { echo "failed: ${failed[*]}"; exit 1; }

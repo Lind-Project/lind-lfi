@@ -21,6 +21,10 @@ static double now(void)
     return t.tv_sec * 1e9 + t.tv_nsec;
 }
 
+// A sample is only valid if every operation it timed succeeded.
+#define CHECK(c) do { if (!(c)) { fprintf(stderr, "b_sys: check failed: %s (line %d)\n", #c, __LINE__); exit(1); } } while (0)
+static int child_ok(pid_t p) { int st; return waitpid(p, &st, 0) == p && WIFEXITED(st) && WEXITSTATUS(st) == 0; }
+
 static volatile int got;
 static void h(int s) { (void) s; got++; }
 
@@ -51,13 +55,15 @@ int main(int argc, char **argv)
         struct sigaction sa = { .sa_handler = h };
         sigaction(SIGUSR1, &sa, NULL);
         pid_t me = getpid();
-        REPS(200000, kill(me, SIGUSR1));
+        int sent = 0;
+        REPS(200000, { CHECK(kill(me, SIGUSR1) == 0); sent++; });
+        CHECK(got == sent);   // every signal must have been delivered to the handler
         printf("signal_catch %.1f ns\n", elapsed);
     } else if (!strcmp(m, "fork")) {
-        REPS(500, { pid_t p = fork(); if (p == 0) _exit(0); waitpid(p, NULL, 0); });
+        REPS(500, { pid_t p = fork(); CHECK(p >= 0); if (p == 0) _exit(0); CHECK(child_ok(p)); });
         printf("fork_exit_wait %.1f us\n", elapsed / 1000);
     } else if (!strcmp(m, "exec")) {
-        REPS(300, { pid_t p = fork(); if (p == 0) { execl(argv[0], argv[0], "exit-now", (char *) 0); _exit(127); } waitpid(p, NULL, 0); });
+        REPS(300, { pid_t p = fork(); CHECK(p >= 0); if (p == 0) { execl(argv[0], argv[0], "exit-now", (char *) 0); _exit(127); } CHECK(child_ok(p)); });
         printf("fork_exec_wait %.1f us\n", elapsed / 1000);
     } else if (!strcmp(m, "pipe") || !strcmp(m, "unix")) {
         int a[2], b[2];
@@ -65,8 +71,10 @@ int main(int argc, char **argv)
         else { int s[2]; if (socketpair(AF_UNIX, SOCK_STREAM, 0, s)) return 1; a[0] = s[0]; a[1] = s[0]; b[0] = s[1]; b[1] = s[1]; }
         pid_t p = fork();
         char c = 'x';
-        if (p == 0) { for (;;) { if (read(a[0], &c, 1) != 1) _exit(0); write(b[1], &c, 1); } }
-        REPS(100000, { write(a[1], &c, 1); read(b[0], &c, 1); });
+        CHECK(p >= 0);
+        if (p == 0) { for (;;) { if (read(a[0], &c, 1) != 1) _exit(0); if (write(b[1], &c, 1) != 1) _exit(1); } }
+        c = 'x';
+        REPS(100000, { CHECK(write(a[1], &c, 1) == 1); c = 0; CHECK(read(b[0], &c, 1) == 1); CHECK(c == 'x'); });
         printf("%s_roundtrip %.2f us\n", m, elapsed / 1000);
         kill(p, SIGKILL);
     } else if (!strcmp(m, "readbw")) {
@@ -75,11 +83,13 @@ int main(int argc, char **argv)
         int fd = open(path, O_CREAT | O_RDWR | O_TRUNC, 0600);
         char *buf = malloc(chunk);
         memset(buf, 7, chunk);
-        for (size_t o = 0; o < sz; o += chunk) write(fd, buf, chunk);
-        for (int w = 0; w < 2; w++) { lseek(fd, 0, SEEK_SET); for (size_t o = 0; o < sz; o += chunk) read(fd, buf, chunk); }
+        CHECK(fd >= 0 && buf);
+        for (size_t o = 0; o < sz; o += chunk) CHECK(write(fd, buf, chunk) == (ssize_t) chunk);
+        for (int w = 0; w < 2; w++) { CHECK(lseek(fd, 0, SEEK_SET) == 0); for (size_t o = 0; o < sz; o += chunk) CHECK(read(fd, buf, chunk) == (ssize_t) chunk); }
         double t0 = now();
         int reps = 8;
-        for (int r = 0; r < reps; r++) { lseek(fd, 0, SEEK_SET); for (size_t o = 0; o < sz; o += chunk) read(fd, buf, chunk); }
+        for (int r = 0; r < reps; r++) { CHECK(lseek(fd, 0, SEEK_SET) == 0); for (size_t o = 0; o < sz; o += chunk) CHECK(read(fd, buf, chunk) == (ssize_t) chunk); }
+        CHECK(buf[0] == 7 && buf[chunk - 1] == 7);
         double s = (now() - t0) / 1e9;
         printf("file_read_bw %.0f MB/s\n", reps * (sz / 1048576.0) / s);
         unlink(path);

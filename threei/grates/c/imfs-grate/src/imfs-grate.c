@@ -1,5 +1,6 @@
 #include <dirent.h>
 #include <errno.h>
+#include <signal.h>
 #include <lind_syscall.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -438,38 +439,83 @@ int main(int argc, char *argv[]) {
 	// OPEN
 	fn_ptr_addr = (uint64_t)(uintptr_t)&open_grate;
 	ret = register_handler(cageid, 2, grateid, fn_ptr_addr);
+	if (ret != 0) {
+		fprintf(stderr, "imfs-grate: register_handler(%d) failed: %d\n", 2, ret);
+		kill(cageid, SIGKILL);
+		return EXIT_FAILURE;
+	}
 
 	// LSEEK
 	fn_ptr_addr = (uint64_t)(uintptr_t)&lseek_grate;
 	ret = register_handler(cageid, 8, grateid, fn_ptr_addr);
+	if (ret != 0) {
+		fprintf(stderr, "imfs-grate: register_handler(%d) failed: %d\n", 8, ret);
+		kill(cageid, SIGKILL);
+		return EXIT_FAILURE;
+	}
 
 	// READ
 	fn_ptr_addr = (uint64_t)(uintptr_t)&read_grate;
 	ret = register_handler(cageid, 0, grateid, fn_ptr_addr);
+	if (ret != 0) {
+		fprintf(stderr, "imfs-grate: register_handler(%d) failed: %d\n", 0, ret);
+		kill(cageid, SIGKILL);
+		return EXIT_FAILURE;
+	}
 
 	// WRITE
 	fn_ptr_addr = (uint64_t)(uintptr_t)&write_grate;
 	ret = register_handler(cageid, 1, grateid, fn_ptr_addr);
+	if (ret != 0) {
+		fprintf(stderr, "imfs-grate: register_handler(%d) failed: %d\n", 1, ret);
+		kill(cageid, SIGKILL);
+		return EXIT_FAILURE;
+	}
 
 	// CLOSE
 	fn_ptr_addr = (uint64_t)(uintptr_t)&close_grate;
 	ret = register_handler(cageid, 3, grateid, fn_ptr_addr);
+	if (ret != 0) {
+		fprintf(stderr, "imfs-grate: register_handler(%d) failed: %d\n", 3, ret);
+		kill(cageid, SIGKILL);
+		return EXIT_FAILURE;
+	}
 
 	// FCNTL
 	fn_ptr_addr = (uint64_t)(uintptr_t)&fcntl_grate;
 	ret = register_handler(cageid, 72, grateid, fn_ptr_addr);
+	if (ret != 0) {
+		fprintf(stderr, "imfs-grate: register_handler(%d) failed: %d\n", 72, ret);
+		kill(cageid, SIGKILL);
+		return EXIT_FAILURE;
+	}
 
 	// UNLINK
 	fn_ptr_addr = (uint64_t)(uintptr_t)&unlink_grate;
 	ret = register_handler(cageid, 87, grateid, fn_ptr_addr);
+	if (ret != 0) {
+		fprintf(stderr, "imfs-grate: register_handler(%d) failed: %d\n", 87, ret);
+		kill(cageid, SIGKILL);
+		return EXIT_FAILURE;
+	}
 
 	// PREAD
 	fn_ptr_addr = (uint64_t)(uintptr_t)&pread_grate;
 	ret = register_handler(cageid, 17, grateid, fn_ptr_addr);
+	if (ret != 0) {
+		fprintf(stderr, "imfs-grate: register_handler(%d) failed: %d\n", 17, ret);
+		kill(cageid, SIGKILL);
+		return EXIT_FAILURE;
+	}
 
 	// PWRITE
 	fn_ptr_addr = (uint64_t)(uintptr_t)&pwrite_grate;
 	ret = register_handler(cageid, 18, grateid, fn_ptr_addr);
+	if (ret != 0) {
+		fprintf(stderr, "imfs-grate: register_handler(%d) failed: %d\n", 18, ret);
+		kill(cageid, SIGKILL);
+		return EXIT_FAILURE;
+	}
 
 	// Notify cage that it can proceed with execution.
 	sem_post(sem);
@@ -482,6 +528,10 @@ int main(int argc, char *argv[]) {
 		if (w > 0) {
 			break;
 		}
+		if (errno != EINTR) {
+			perror("imfs-grate: wait");
+			return EXIT_FAILURE;
+		}
 	}
 
 	// Dump selected IMFS files back to disk after the cage exits.
@@ -492,5 +542,6 @@ int main(int argc, char *argv[]) {
 	sem_destroy(sem);
 	munmap(sem, sizeof(*sem));
 
-	return 0;
+	// The grate's exit status is the cage's: a failed or signaled cage must fail the caller.
+	return (WIFEXITED(status) ? WEXITSTATUS(status) : WIFSIGNALED(status) ? 128 + WTERMSIG(status) : 1);
 }

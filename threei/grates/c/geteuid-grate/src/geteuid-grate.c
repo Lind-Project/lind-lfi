@@ -113,9 +113,12 @@ int main(int argc, char *argv[]) {
 	}
 
 	int status;
+	int cage_status = 0;
 	while (wait(&status) > 0) {
 		LOG("[Grate|geteuid] terminated, status: %d\n", status);
+		cage_status = (WIFEXITED(status) ? WEXITSTATUS(status) : WIFSIGNALED(status) ? 128 + WTERMSIG(status) : 1);
 	}
 
-	return 0;
+	// The grate's exit status is the cage's: a failed or signaled cage must fail the caller.
+	return cage_status;
 }
