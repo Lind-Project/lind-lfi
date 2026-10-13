@@ -49,6 +49,19 @@ int main(int argc, char **argv)
     fprintf(stderr, "[capture] misuse child status %d\n", st);
     // terminated by the runtime (a fault in the bogus thread or the containment exit), not alive
     assert(WIFSIGNALED(st) || (WIFEXITED(st) && WEXITSTATUS(st) >= 128));
+    // And a process-creating clone with CAPTURE armed is still mediated by the parent.
+    pid_t pid3 = fork();
+    assert(pid3 >= 0);
+    if (pid3 == 0) {
+        int me = getpid();
+        assert(register_handler(me, 56, grate, (uint64_t) (uintptr_t) deny) == 0);
+        char *args[] = { argv[1], (char *) "procclone", NULL };
+        execv(argv[1], args);
+        _exit(127);
+    }
+    waitpid(pid3, &st, 0);
+    fprintf(stderr, "[capture] procclone child status %d\n", st);
+    assert(WIFEXITED(st) && WEXITSTATUS(st) == 0);
     printf("[capture] PASS\n");
     return 0;
 }

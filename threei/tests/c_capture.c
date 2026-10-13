@@ -3,6 +3,7 @@
 #define _GNU_SOURCE
 #include <errno.h>
 #include <sched.h>
+#include <signal.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -61,10 +62,37 @@ static int abuse_clone(void)
     return 0;
 }
 
+// With CAPTURE armed, a clone that creates a *process* must still meet the parent's clone
+// handler (which denies it here): the exemption is only for thread-creating clones.
+static int abuse_procclone(void)
+{
+    syscall(SYS_SETENTRY, (long) stub, (long) stub);
+    if (syscall(SYS_CAPTURE) != 0) return 1;
+    errno = 0;
+    long r = syscall(SYS_clone, (long) SIGCHLD, 0L, 0L, 0L, 0L);
+    if (r == 0) _exit(0);              // we are the unmediated child process
+    if (r > 0) {
+        printf("FAIL: a process clone bypassed the parent's handler (pid %ld)\n", r);
+        return 1;
+    }
+    if (errno != EPERM) { printf("FAIL: clone returned errno %d, not EPERM\n", errno); return 1; }
+    // the request was disarmed, not left pending for a later thread clone
+    errno = 0;
+    char *stk = (char *) malloc(65536);
+    static int ptid, ctid;
+    r = syscall(SYS_clone, CLONE_VM | CLONE_FS | CLONE_FILES | CLONE_SIGHAND | CLONE_THREAD |
+        CLONE_SYSVSEM, stk + 65536, &ptid, &ctid, 0L);
+    if (r != -1 || errno != EPERM) { printf("FAIL: a later thread clone was not mediated (r=%ld)\n", r); return 1; }
+    puts("procclone: PASS");
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
     if (argc > 1 && !strcmp(argv[1], "clone"))
         return abuse_clone();
+    if (argc > 1 && !strcmp(argv[1], "procclone"))
+        return abuse_procclone();
     int fails = 0;
     if (denied()) fails |= 1;
     // 1. No shim installed: CAPTURE must be refused and change nothing.

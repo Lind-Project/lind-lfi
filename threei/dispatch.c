@@ -244,6 +244,25 @@ threei_make_call(struct Cage *caller, struct LFILinuxThread *t, lfiptr reqp)
 // System call entry from sandboxed code
 // ---------------------------------------------------------------------------
 
+// Does the armed capture request apply to this call? Only a thread-creating clone (what the
+// shim's pthread_create issues) may skip the handler table. The request is validated here,
+// before the exemption is granted: a clone that would create a process, and clone3 (whose flags
+// live behind a pointer and which the shim never uses), are mediated like any other call and
+// disarm the request instead of consuming it.
+static bool
+capture_exempt(uint64_t nr, const uint64_t a[6])
+{
+    if (!lfi_capture_clone)
+        return false;
+    if (nr != 56 && nr != 435)
+        return false; // other calls (mmap, ...) neither use nor disarm the request
+    const uint64_t need = LINUX_CLONE_VM | LINUX_CLONE_SIGHAND | LINUX_CLONE_THREAD;
+    if (nr == 56 && (a[0] & need) == need)
+        return true;
+    lfi_capture_clone = false;
+    return false;
+}
+
 // System calls the guest's context start-up (thread entry, then the pause call) may make.
 static bool
 capture_startup_call(uint64_t nr)
@@ -302,7 +321,7 @@ threei_sys_handler(struct LFIContext *ctx)
         uint64_t e = atomic_load_explicit(&c->htab[idx], memory_order_acquire);
         // Only the clone that creates a handler context bypasses the table (nr, not
         // cnr: fork is aliased to clone and must stay mediated).
-        if (unlikely(e != 0) && !(lfi_capture_clone && (nr == 56 || nr == 435))) {
+        if (unlikely(e != 0) && !(unlikely(lfi_capture_clone) && capture_exempt(nr, cl.a))) {
             sys_clear_unused_args(cnr, cl.a);
             uint64_t *a = cl.a;
             // Every argument of a call a cage makes itself refers to the cage.
