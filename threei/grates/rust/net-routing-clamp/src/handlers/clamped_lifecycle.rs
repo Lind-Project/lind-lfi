@@ -48,12 +48,12 @@ pub extern "C" fn register_handler_handler(
                 return ret; // no route recorded for a registration that did not happen
             }
 
-            let _ = helpers::set_route(target_cage, syscall_nr, alt_nr);
-
+            // Publish the route only once the visible handler is installed too.
             match register_handler(target_cage, syscall_nr, ns_cage, ns_handler) {
                 Ok(_) => {}
                 Err(_) => return -1,
             }
+            let _ = helpers::set_route(target_cage, syscall_nr, alt_nr);
         } else {
             return helpers::do_syscall(
                 grate_id,

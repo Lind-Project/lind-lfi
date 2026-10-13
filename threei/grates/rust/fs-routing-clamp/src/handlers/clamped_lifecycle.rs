@@ -38,14 +38,28 @@ pub extern "C" fn register_handler_handler(
     // register clamped syscall handlers.
     //.push((target_cage, syscall_nr, grate_id, handler_fn_ptr));
 
-    helpers::push_interposition_request((target_cage, syscall_nr, grate_id, handler_fn_ptr));
-
-    helpers::do_syscall(
+    let ret = helpers::do_syscall(
         grate_id,
         SYS_REGISTER_HANDLER,
         &[target_cage, 0, handler_fn_ptr, 0, 0, 0],
         &[syscall_nr, grate_id, arg3cage, arg4cage, arg5cage, arg6cage],
-    )
+    );
+
+    // Record the request only if the registration actually happened: a refused registration
+    // must not later be "installed" from the table.
+    if ret == 0 {
+        helpers::push_interposition_request((target_cage, syscall_nr, grate_id, handler_fn_ptr));
+    }
+    ret
+}
+
+/// Undo the registrations `register_target_handlers` made on `target_cage` so far (best effort:
+/// a policy above us may refuse to let a slot be emptied, in which case the caller still
+/// terminates the cage).
+fn rollback_target_handlers(target_cage: u64, installed: &[u64]) {
+    for &nr in installed {
+        let _ = grate_rs::deregister_handler(target_cage, nr);
+    }
 }
 
 pub fn register_target_handlers(target_cage: u64) -> i32 {
@@ -72,6 +86,11 @@ pub fn register_target_handlers(target_cage: u64) -> i32 {
     //  that the call still goes to interpose-open-write.
     //
     //  The routing logic is handled in the `ns_handlers.rs` helpers.
+    //
+    // All-or-nothing: routes are published to the routing table only after every handler is
+    // installed, and everything installed is rolled back if any step fails.
+    let mut pending_routes: Vec<(u64, u64)> = Vec::new(); // (fs syscall, alt number)
+    let mut installed: Vec<u64> = Vec::new();
     for fs_syscall in FS_CALLS {
         let ns_handler = get_ns_handler(fs_syscall);
 
@@ -93,18 +112,20 @@ pub fn register_target_handlers(target_cage: u64) -> i32 {
             );
 
             if ret != 0 {
+                rollback_target_handlers(target_cage, &installed);
                 return ret;
             }
 
-            // ... Add to routing table.
-            let _ = helpers::set_route(target_cage, fs_syscall, alt_nr);
+            // ... and remember the route; it is published once the installation is complete.
+            pending_routes.push((fs_syscall, alt_nr));
         }
         
         // The visible handler on the target cage always points at ns-grate.
         match register_handler(target_cage, fs_syscall, ns_cage, ns_handler.unwrap()) {
-            Ok(_) => {}
+            Ok(_) => installed.push(fs_syscall),
             Err(e) => {
                 log!("failed to register ns handler: {:?}", e);
+                rollback_target_handlers(target_cage, &installed);
                 return -1;
             }
         }
@@ -118,10 +139,15 @@ pub fn register_target_handlers(target_cage: u64) -> i32 {
         Ok(_) => {}
         Err(e) => {
             log!("failed to register default fd handlers: {:?}", e);
+            rollback_target_handlers(target_cage, &installed);
             return -1;
         }
     }
 
+    // Complete: publish the routes.
+    for (fs_syscall, alt_nr) in pending_routes {
+        let _ = helpers::set_route(target_cage, fs_syscall, alt_nr);
+    }
     0
 }
 

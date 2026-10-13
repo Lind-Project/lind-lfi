@@ -9,6 +9,9 @@ pub mod process;
 pub mod lind {
     pub const ELINDAPIABORTED: u64 = 0xE001_0001;
 
+    /// Pass as the grate id to `register_handler` to restore the default handler.
+    pub const THREEI_DEREGISTER: u64 = 500;
+
     /// Flag to mark an argcageid as pointing into the grate's own linear memory
     /// rather than the calling cage's memory. OR this with the cageid when passing
     /// a pointer that lives in the grate's address space.

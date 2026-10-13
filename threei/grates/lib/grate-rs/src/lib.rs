@@ -196,6 +196,17 @@ pub fn register_handler(
     }
 }
 
+/// Restore the default handler for a syscall in `cageid`'s table.
+pub fn deregister_handler(cageid: u64, syscall_nr: u64) -> Result<(), GrateError> {
+    let ret = unsafe {
+        register_handler_impl(cageid, syscall_nr, constants::lind::THREEI_DEREGISTER, 0)
+    };
+    match ret {
+        0 => Ok(()),
+        _ => Err(GrateError::HandlerRegistrationError(ret)),
+    }
+}
+
 /// Copy data between two cages.
 ///
 /// Fails if the runtime refused the copy (bad cage, address outside the cage's memory, no

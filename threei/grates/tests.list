@@ -77,6 +77,12 @@ run load/mtls-grate 0 'Usage' "$LRUN" $G/mtls-grate --help
 #     does not run or its outside-prefix open is denied; "ESCAPED" must never appear.
 # (2) Every registration fails (the clamp cannot even hook its child): the program must not run,
 #     and the chain must report failure.
-run clamp/fs-routes-fail-closed 0 - bash -c 'out=$("$LRUN" /grates/seccomp-grate /demos/least-privilege/seccomp_fs_deny_lfi.conf /grates/deny-register-grate 2000 /grates/fs-routing-clamp --prefix /workspace %{ /grates/imfs-grate %} /tests/escape-probe 2>&1); echo "$out" | tail -4; ! echo "$out" | grep -q ESCAPED && [ ! -e "$LFS/tmp/escaped_the_clamp" ]'
-run clamp/fs-install-fails-closed 0 - bash -c 'out=$("$LRUN" /grates/deny-register-grate 0 /grates/fs-routing-clamp --prefix /workspace %{ /grates/imfs-grate %} /tests/escape-probe 2>&1); rc=$?; echo "$out" | tail -4; [ $rc -ne 0 ] && ! echo "$out" | grep -q "ESCAPED\|confined:"'
-run clamp/net-install-fails-closed 0 - bash -c 'out=$("$LRUN" /grates/deny-register-grate 0 /grates/net-routing-clamp --ports 8080-8090 %{ /grates/testing-grate -s 49:166 %} /tests/escape-probe 2>&1); rc=$?; echo "$out" | tail -4; [ $rc -ne 0 ] && ! echo "$out" | grep -q "ESCAPED\|confined:"'
+run clamp/fs-routes-fail-closed 0 - bash -c 'out=$("$LRUN" /grates/seccomp-grate /demos/least-privilege/seccomp_fs_deny_lfi.conf /grates/deny-register-grate 2000 0 /grates/fs-routing-clamp --prefix /workspace %{ /grates/imfs-grate %} /tests/escape-probe 2>&1); echo "$out" | tail -4; ! echo "$out" | grep -q ESCAPED && [ ! -e "$LFS/tmp/escaped_the_clamp" ]'
+run clamp/fs-install-fails-closed 0 - bash -c 'out=$("$LRUN" /grates/deny-register-grate 0 0 /grates/fs-routing-clamp --prefix /workspace %{ /grates/imfs-grate %} /tests/escape-probe 2>&1); rc=$?; echo "$out" | tail -4; [ $rc -ne 0 ] && ! echo "$out" | grep -q "ESCAPED\|confined:"'
+run clamp/net-install-fails-closed 0 - bash -c 'out=$("$LRUN" /grates/deny-register-grate 0 0 /grates/net-routing-clamp --ports 8080-8090 %{ /grates/testing-grate -s 49:166 %} /tests/escape-probe 2>&1); rc=$?; echo "$out" | tail -4; [ $rc -ne 0 ] && ! echo "$out" | grep -q "ESCAPED\|confined:"'
+# (3) The failure is injected after N successful registrations, for many N, so that every point of
+#     the installation is exercised: whatever has been installed by then, the program must never
+#     reach the host (the seccomp policy denies filesystem access; "ESCAPED" must never appear).
+for n in 0 1 2 3 5 8 13 21 34 55 89 144; do
+  run "clamp/fs-fail-after-$n" 0 - bash -c 'out=$("$LRUN" /grates/seccomp-grate /demos/least-privilege/seccomp_fs_deny_lfi.conf /grates/deny-register-grate 0 '"$n"' /grates/fs-routing-clamp --prefix /workspace %{ /grates/imfs-grate %} /tests/escape-probe 2>&1); ! echo "$out" | grep -q ESCAPED && [ ! -e "$LFS/tmp/escaped_the_clamp" ]'
+done
