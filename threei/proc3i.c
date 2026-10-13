@@ -128,6 +128,28 @@ notify_abnormal_exit(struct Cage *c, int code)
     }
 }
 
+// Handlers that point into cage c now fail instead of being left to dangle: its id may be reused
+// by an unrelated cage, and after an exec the old handler offsets mean nothing in the new image
+// (the new image registers its handlers again).
+static void
+scrub_handlers_for(struct Cage *c)
+{
+    if (!atomic_load(&c->is_grate))
+        return;
+    for (size_t i = 1; i < g_eng->table_n; i++) {
+        struct Cage *x = cage_get((uint32_t) i);
+        if (!x)
+            continue;
+        for (size_t k = 0, kn = ht_limit(x); k < kn; k++) {
+            uint64_t e = atomic_load_explicit(&x->htab[k], memory_order_acquire);
+            if (e && e != HT_DEAD && (uint32_t) (e >> 32) == c->id) {
+                atomic_store_explicit(&x->htab[k], HT_DEAD, memory_order_release);
+            }
+        }
+        cage_put(x);
+    }
+}
+
 // Called by the host thread of a cage after its program has finished.
 int
 cage_finish(struct Cage *c, int code)
@@ -156,23 +178,7 @@ cage_finish(struct Cage *c, int code)
     if (c->killsig)
         notify_abnormal_exit(c, code);
 
-    // Handlers that pointed at this cage now fail instead of being left to
-    // dangle (the id may be reused by an unrelated cage).
-    if (atomic_load(&c->is_grate)) {
-        for (size_t i = 1; i < g_eng->table_n; i++) {
-            struct Cage *x = cage_get((uint32_t) i);
-            if (!x)
-                continue;
-            for (size_t k = 0, kn = ht_limit(x); k < kn; k++) {
-                uint64_t e = atomic_load_explicit(&x->htab[k],
-                    memory_order_acquire);
-                if (e && (uint32_t) (e >> 32) == c->id)
-                    atomic_store_explicit(&x->htab[k], HT_DEAD,
-                        memory_order_release);
-            }
-            cage_put(x);
-        }
-    }
+    scrub_handlers_for(c);
 
     // Give the children to the init cage (or orphan them).
     pthread_mutex_lock(&g_eng->tree_lk);
@@ -490,9 +496,7 @@ cage_exit(struct Call *c, bool group)
     struct LFILinuxThread *rt = real_thread(c);
     if (!rt)
         return -ESRCH;
-    struct Frame *f = frame_serving(c->target);
-    if (f)
-        frames_unwind_through(f);
+    call_unwind_for_exit(c, c->target, rt);
     if (group) {
         // Like Linux's exit_group: the cage's other threads must not stay
         // blocked (in a futex, a read, ...) or spin on. Publish the request,
@@ -836,6 +840,7 @@ cage_exec(struct Call *c)
 
     // ---- Point of no return: the old program image is replaced. ----
     fdcloexec(&p->fdtable);
+    scrub_handlers_for(T);
     grate_free_all(T);
     free(p->dynsym.data);
     free(p->dynstr.data);
@@ -868,9 +873,7 @@ cage_exec(struct Call *c)
         pt->ctidp = 0; // it pointed into the image that is gone
         atomic_store(&p->exit_code, 127);
         atomic_store(&p->terminating, true);
-        struct Frame *f = frame_serving(T);
-        if (f)
-            frames_unwind_through(f);
+        call_unwind_for_exit(c, T, pt);
         thread_exit(pt, LFI_EXIT_PROCESS, 127);
     }
     nt->tid = (int) T->id;
@@ -881,9 +884,7 @@ cage_exec(struct Call *c)
 
     // Discard any grate frames this call came through, then leave the old
     // image: control returns to the cage's main loop, which switches over.
-    struct Frame *f = frame_serving(T);
-    if (f)
-        frames_unwind_through(f);
+    call_unwind_for_exit(c, T, pt);
     lfi_ctx_exit(pt->ctx, 0);
     __builtin_unreachable();
 

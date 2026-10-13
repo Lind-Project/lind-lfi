@@ -887,11 +887,18 @@ NATIVE(n_getcwd)
     if (!buf)
         return -EFAULT;
     struct LFILinuxProc *pr = tproc(c);
-    LOCK_WITH_DEFER(&pr->cwd.lk, lk);
-    size_t len = strnlen(pr->cwd.path, sizeof(pr->cwd.path) - 1) + 1;
-    if (len > size)
-        return -ERANGE;
-    memcpy(buf, pr->cwd.path, len);
+    // Copy out under the lock, write into the guest after releasing it: the write can fault (an
+    // inaccessible page of the sandbox) and a fault must never leave the lock held.
+    char tmp[sizeof(pr->cwd.path)];
+    size_t len;
+    {
+        LOCK_WITH_DEFER(&pr->cwd.lk, lk);
+        len = strnlen(pr->cwd.path, sizeof(pr->cwd.path) - 1) + 1;
+        if (len > size)
+            return -ERANGE;
+        memcpy(tmp, pr->cwd.path, len);
+    }
+    memcpy(buf, tmp, len);
     return (long) len;
 }
 

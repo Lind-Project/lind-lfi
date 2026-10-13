@@ -209,6 +209,21 @@ n3i_copy_htab(struct Call *c)
     return ret;
 }
 
+// memset that reports a fault instead of taking the runtime down.
+static bool
+zero_guarded(char *p, size_t len)
+{
+    sigjmp_buf jb;
+    if (sigsetjmp(jb, 1) != 0) {
+        tl_copy_jb = NULL;
+        return false;
+    }
+    tl_copy_jb = &jb;
+    memset(p, 0, len);
+    tl_copy_jb = NULL;
+    return true;
+}
+
 long
 n3i_copy_data(struct Call *c)
 {
@@ -250,43 +265,46 @@ n3i_copy_data(struct Call *c)
         goto unlock;
     }
 
-    size_t n;
-    if (type == LFI3I_COPY_MEMCPY) {
-        n = len;
-    } else if (type == LFI3I_COPY_STRNCPY) {
-        if (srcaddr == 0)
-            goto unlock;
-        size_t sl = lfi_box_strnlen(sbox, srcaddr, len);
-        if (sl == SIZE_MAX)
-            goto unlock; // no terminator within the limit
-        n = sl + 1;
-    } else {
+    if (type != LFI3I_COPY_MEMCPY && type != LFI3I_COPY_STRNCPY)
         goto unlock;
-    }
-    if (n == 0) {
-        ret = (long) dstaddr;
+    if (type == LFI3I_COPY_STRNCPY && srcaddr == 0)
         goto unlock;
-    }
-    if (srcaddr == 0 || !lfi_box_bufvalid(sbox, srcaddr, n) ||
-        !lfi_box_bufvalid(dbox, dstaddr, n))
-        goto unlock;
-    // The boxes are distinct, so the ranges cannot overlap. A cage whose
-    // other threads unmap the range mid-copy must not take the runtime down:
-    // a fault returns here.
-    //
-    // Grates written for Lind copy a fixed-size buffer (a path buffer, say)
-    // from a pointer into a cage's memory, which there is always readable:
-    // WebAssembly memory is contiguous. Here the bytes after a string may be
-    // on an unmapped page. So a memcpy that runs into unreadable memory after
-    // at least one byte is not an error: what could be read is copied and the
-    // rest of the destination is zeroed.
+
+    // Every access to guest memory below, the scan for a string's end included, happens inside the
+    // recovery region: the other sandbox may unmap or protect the range at any moment, and an
+    // inaccessible range inside the window faults in this thread. (Nothing that can fault runs
+    // while the memory locks are held but outside this region, so the locks cannot be skipped.)
     {
         sigjmp_buf jb;
+        volatile size_t n = 0;
         volatile size_t done = 0;
-        char *d = (char *) lfi_box_l2p(dbox, dstaddr);
-        char *sp = (char *) lfi_box_l2p(sbox, srcaddr);
+        char *volatile d = NULL;
+        char *volatile sp = NULL;
         if (sigsetjmp(jb, 1) == 0) {
             tl_copy_jb = &jb;
+            if (type == LFI3I_COPY_MEMCPY) {
+                n = len;
+            } else {
+                size_t sl = lfi_box_strnlen(sbox, srcaddr, len);
+                if (sl == SIZE_MAX) { // no terminator within the limit
+                    tl_copy_jb = NULL;
+                    goto unlock;
+                }
+                n = sl + 1;
+            }
+            if (n == 0) {
+                tl_copy_jb = NULL;
+                ret = (long) dstaddr;
+                goto unlock;
+            }
+            if (srcaddr == 0 || !lfi_box_bufvalid(sbox, srcaddr, n) ||
+                !lfi_box_bufvalid(dbox, dstaddr, n)) {
+                tl_copy_jb = NULL;
+                goto unlock;
+            }
+            // The boxes are distinct, so the ranges cannot overlap.
+            d = (char *) lfi_box_l2p(dbox, dstaddr);
+            sp = (char *) lfi_box_l2p(sbox, srcaddr);
             while (done < n) {
                 // Copy to the end of the source page, then page by page.
                 size_t chunk = 4096 - ((srcaddr + done) & 4095);
@@ -299,12 +317,17 @@ n3i_copy_data(struct Call *c)
             ret = (long) dstaddr;
         } else {
             tl_copy_jb = NULL;
-            if (type == LFI3I_COPY_MEMCPY && done > 0) {
-                memset(d + done, 0, n - done);
+            // Grates written for Lind copy a fixed-size buffer (a path buffer, say) from a
+            // pointer into a cage's memory, which there is always readable: WebAssembly memory is
+            // contiguous. Here the bytes after a string may be on an unmapped page. So a memcpy
+            // that runs into unreadable memory after at least one byte is not an error: what could
+            // be read is copied and the rest of the destination is zeroed (itself guarded: the
+            // destination may be the inaccessible side).
+            if (type == LFI3I_COPY_MEMCPY && done > 0 && n > done &&
+                zero_guarded((char *) d + done, n - done))
                 ret = (long) dstaddr;
-            } else {
+            else
                 ret = abort_code();
-            }
         }
     }
 unlock:

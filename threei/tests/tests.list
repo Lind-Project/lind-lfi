@@ -46,3 +46,8 @@ run threadsig-handler 0   "$RUN" "$OUT/c_threadsig" handler
 run threadsig-ignored 0   "$RUN" "$OUT/c_threadsig" ignored
 run threadsig-fatal   138 "$RUN" "$OUT/c_threadsig" fatal
 run threadsig-race    0   "$RUN" "$OUT/c_threadsig" race
+run exitleak          0 "$RUN" --max-cages=24 "$OUT/g_exitleak" "$OUT/c_exitleak" 200
+run execimg           0 "$RUN" "$OUT/g_execimg" "$OUT/c_getpid_server"
+# Inaccessible memory inside the sandbox: calls fail with EFAULT and nothing else is affected.
+run badptr            0 "$RUN" "$OUT/c_badptr"
+run faultcopy         0 "$RUN" "$OUT/g_faultcopy" "$OUT/c_faultcopy"

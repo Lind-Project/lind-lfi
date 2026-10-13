@@ -16,6 +16,7 @@
 // guest's libc (see guest/lfi3i.c): a thread is created, run until it parks,
 // and the runtime captures its context instead of scheduling it.
 #include "cage.h"
+#include <time.h>
 
 #include "lock.h"
 
@@ -30,9 +31,13 @@
 
 #define CACHE_N 8
 
+// An entry is only dereferenced after the grate cage it names is looked up again and still has
+// the same id generation (gen) and program image (img): a cage that exited, whose id was reused,
+// or that exec'd has freed its contexts, so the cached pointer is dead.
 struct TCache {
     uint32_t gid;
     uint32_t gen;
+    uint64_t img;
     struct GCtx *gc;
 };
 
@@ -53,6 +58,7 @@ void
 grate_spawn_state_reset(void)
 {
     tl_spawn_auth = false;
+    tl_sys_jb = NULL; // may point into a host stack that a nonlocal exit threw away
     lfi_capture_clone = false;
     lfi_captured_thread = NULL;
 }
@@ -196,7 +202,10 @@ static struct GCtx *
 gctx_acquire(struct Cage *g)
 {
     struct TCache *e = &tcache[g->id % CACHE_N];
-    if (e->gc && e->gid == g->id && e->gen == g->gen && !e->gc->busy) {
+    // The caller has counted this call in g->inflight, and teardown (grate_free_all) waits for
+    // inflight to reach zero after bumping img, so an entry whose img still matches is alive.
+    if (e->gc && e->gid == g->id && e->gen == g->gen &&
+        e->img == atomic_load(&g->img) && !e->gc->busy) {
         e->gc->busy = true;
         return e->gc;
     }
@@ -206,17 +215,26 @@ gctx_acquire(struct Cage *g)
     if (!gc)
         return NULL;
     gc->busy = true;
-    // Replace the cache entry; an idle previous occupant goes back to its
-    // grate's pool (if that grate still exists).
-    if (e->gc && !e->gc->busy) {
+    // Replace the cache entry; an idle previous occupant goes back to its grate's pool if that
+    // grate still exists with the same contexts. Nothing of the old entry (not even its busy
+    // flag) is touched before the old cage has been looked up and its generation checked, and
+    // the check and the access happen under that cage's context lock, which teardown also takes
+    // while freeing.
+    if (e->gc && e->gid != 0) {
         struct Cage *og = cage_get(e->gid);
-        if (og && og->gen == e->gen)
-            pool_push(og, e->gc);
-        if (og)
+        if (og) {
+            pthread_mutex_lock(&og->g_lk);
+            if (og->gen == e->gen && e->img == atomic_load(&og->img) && !e->gc->busy) {
+                e->gc->next_free = og->g_free;
+                og->g_free = e->gc;
+            }
+            pthread_mutex_unlock(&og->g_lk);
             cage_put(og);
+        }
     }
     e->gid = g->id;
     e->gen = g->gen;
+    e->img = atomic_load(&g->img);
     e->gc = gc;
     return gc;
 }
@@ -230,19 +248,39 @@ gctx_release(struct Cage *g, struct GCtx *gc)
         pool_push(g, gc);
 }
 
+// Frees the cage's execution contexts (it is exiting, or its program image is being replaced).
+// Every host thread may hold a cached pointer to them: the image generation is bumped first so
+// the caches stop matching, new calls are refused, and the calls already in progress are waited
+// for before anything is freed. If they do not finish, the contexts are leaked instead of freed:
+// a leak is harmless, a use-after-free is not.
 void
 grate_free_all(struct Cage *c)
 {
+    __atomic_store_n(&c->g_entry, 0, __ATOMIC_SEQ_CST); // new calls are refused from here on
+    __atomic_store_n(&c->g_spawn, 0, __ATOMIC_SEQ_CST);
+    atomic_store(&c->g_init_budget, 0);
+    atomic_fetch_add(&c->img, 1); // caches stop matching
+    bool quiet = true;
+    for (int i = 0; atomic_load(&c->inflight) != 0; i++) {
+        if (i > 500) { // ~10 s
+            quiet = false;
+            break;
+        }
+        struct timespec ts = { 0, 20000000 };
+        nanosleep(&ts, NULL);
+    }
+    pthread_mutex_lock(&c->g_lk);
     struct GCtx *gc = c->g_all;
+    c->g_all = c->g_free = c->g_cloner = NULL;
+    pthread_mutex_unlock(&c->g_lk);
     while (gc) {
         struct GCtx *next = gc->next_all;
-        lfi_thread_free(gc->t);
-        free(gc);
+        if (quiet) {
+            lfi_thread_free(gc->t);
+            free(gc);
+        }
         gc = next;
     }
-    c->g_all = c->g_free = c->g_cloner = NULL;
-    c->g_entry = c->g_spawn = 0;
-    atomic_store(&c->g_init_budget, 0);
 }
 
 // Undo a grate call whose host frames are about to be discarded (the thread
@@ -271,14 +309,16 @@ grate_call(struct Cage *caller, struct LFILinuxThread *caller_t,
     if (!g)
         return -ESRCH;
     if (atomic_load_explicit(&g->state, memory_order_acquire) != CAGE_RUNNING ||
-        !g->g_entry) {
+        !__atomic_load_n(&g->g_entry, __ATOMIC_SEQ_CST)) {
         cage_put(g);
         return -ESRCH;
     }
-    // Count the call before re-checking the state so the grate cannot finish
-    // exiting underneath us.
-    atomic_fetch_add_explicit(&g->inflight, 1, memory_order_acq_rel);
-    if (atomic_load_explicit(&g->state, memory_order_acquire) != CAGE_RUNNING) {
+    // Count the call before re-checking the state and the entry point, so the grate cannot
+    // finish exiting or replace its program image underneath us: teardown clears the entry
+    // point, then waits for the count to reach zero before freeing anything (all seq_cst).
+    atomic_fetch_add(&g->inflight, 1);
+    if (atomic_load_explicit(&g->state, memory_order_acquire) != CAGE_RUNNING ||
+        !__atomic_load_n(&g->g_entry, __ATOMIC_SEQ_CST)) {
         atomic_fetch_sub(&g->inflight, 1);
         cage_put(g);
         return -ESRCH;
@@ -292,12 +332,28 @@ grate_call(struct Cage *caller, struct LFILinuxThread *caller_t,
         return -EAGAIN;
     }
 
-    struct lfi3i_req *rq = (struct lfi3i_req *) gc->req;
-    rq->fn = g->proc->box_info.base + fnoff;
-    rq->cageid = g->id;
-    for (int i = 0; i < 6; i++) {
-        rq->arg[i] = a[i];
-        rq->argcage[i] = ac[i];
+    // The request block lives in the grate's own memory, which the grate (or a bug in it) may
+    // have made inaccessible: that fails this call, not the runtime. This region has its own
+    // recovery point so that the cleanup below still runs.
+    {
+        struct lfi3i_req *rq = (struct lfi3i_req *) gc->req;
+        sigjmp_buf jb;
+        sigjmp_buf *saved = tl_sys_jb;
+        if (sigsetjmp(jb, 0) != 0) {
+            tl_sys_jb = saved;
+            gctx_release(g, gc);
+            atomic_fetch_sub_explicit(&g->inflight, 1, memory_order_acq_rel);
+            cage_put(g);
+            return -EFAULT;
+        }
+        tl_sys_jb = &jb;
+        rq->fn = g->proc->box_info.base + fnoff;
+        rq->cageid = g->id;
+        for (int i = 0; i < 6; i++) {
+            rq->arg[i] = a[i];
+            rq->argcage[i] = ac[i];
+        }
+        tl_sys_jb = saved;
     }
 
     struct Frame fr = {

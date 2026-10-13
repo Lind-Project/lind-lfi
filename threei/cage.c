@@ -10,6 +10,7 @@
 struct Engine3i *g_eng;
 _Thread_local struct Frame *tl_frames;
 _Thread_local sigjmp_buf *tl_copy_jb;
+_Thread_local sigjmp_buf *tl_sys_jb;
 
 // Cage structures are never returned to the system: lock-free lookups
 // (cage_get) may touch a structure that is concurrently being recycled, and
@@ -76,6 +77,7 @@ cage_alloc(uint32_t ppid, struct LFILinuxProc *proc)
     atomic_store(&c->g_init_budget, 0);
     c->g_all = c->g_free = c->g_cloner = NULL;
     atomic_store(&c->inflight, 0);
+    atomic_store(&c->img, 0);
     atomic_store(&c->is_grate, false);
     sig_cage_init(c);
     for (size_t i = 0, n = ht_limit(c); i < n; i++)

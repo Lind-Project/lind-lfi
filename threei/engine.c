@@ -75,6 +75,19 @@ sigusr1_handler(int sig, siginfo_t *si, void *vuc)
         abandon_ctx(ctx, atomic_load(&t->proc->exit_code));
 }
 
+// Is addr inside the address range of some sandbox?
+static bool
+fault_in_a_sandbox(void *addr)
+{
+    uintptr_t a = (uintptr_t) addr;
+    for (size_t i = 1; i < g_eng->table_n; i++) {
+        uintptr_t base = atomic_load_explicit(&g_eng->bases[i], memory_order_acquire);
+        if (base && a >= base && a - base < BOX_SPAN)
+            return true;
+    }
+    return false;
+}
+
 // A fault in sandboxed code (wild pointer, stack overflow, bad instruction)
 // must only take down the cage that caused it, as SIGSEGV would a process.
 static void
@@ -82,9 +95,13 @@ fault_handler(int sig, siginfo_t *si, void *vuc)
 {
     ucontext_t *uc = vuc;
     // A cross-sandbox copy hit memory that went away underneath it.
-    if (tl_copy_jb && sig == SIGSEGV)
+    if (tl_copy_jb && (sig == SIGSEGV || sig == SIGBUS))
         siglongjmp(*tl_copy_jb, 1);
     struct LFIContext *ctx = interrupted_ctx(uc);
+    // The runtime itself, while carrying out a system call, touched an inaccessible page of a
+    // sandbox: the call fails with EFAULT. (A fault anywhere else in the runtime is a bug.)
+    if (!ctx && tl_sys_jb && (sig == SIGSEGV || sig == SIGBUS) && fault_in_a_sandbox(si->si_addr))
+        siglongjmp(*tl_sys_jb, 1);
     if (ctx) {
         struct LFILinuxThread *t = lfi_ctx_data(ctx);
         struct Cage *c = t->proc->cage;

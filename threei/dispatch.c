@@ -43,18 +43,81 @@ frames_involve(struct Cage *other)
     return false;
 }
 
+// Cage references held by host frames of this host thread (see cage.h), innermost last.
+struct Hold {
+    struct Cage *cage;
+    struct Frame *mark; // innermost grate frame when the reference was taken
+};
+static _Thread_local struct Hold *holds;
+static _Thread_local size_t nholds, capholds;
+
+void
+hold_push(struct Cage *c)
+{
+    if (nholds == capholds) {
+        size_t n = capholds ? capholds * 2 : 16;
+        struct Hold *h = realloc(holds, n * sizeof(*h));
+        if (!h) {
+            // Cannot record it: keep the reference alive forever rather than risk a
+            // use-after-free later (the cage id stays occupied, which is the lesser harm).
+            return;
+        }
+        holds = h;
+        capholds = n;
+    }
+    holds[nholds].cage = c;
+    holds[nholds].mark = tl_frames;
+    nholds++;
+}
+
+// Normal return: release the innermost hold.
+void
+hold_pop_put(void)
+{
+    if (nholds == 0)
+        return; // the matching hold_push could not record it (see above)
+    struct Cage *c = holds[--nholds].cage;
+    cage_put(c);
+}
+
+// Releases the holds taken while 'mark' was the innermost frame (NULL: taken outside any grate
+// frame on this host thread).
+static void
+holds_release_marked(struct Frame *mark)
+{
+    while (nholds > 0 && holds[nholds - 1].mark == mark)
+        cage_put(holds[--nholds].cage);
+}
+
 // Discards every frame from the innermost down to and including f (the host
-// frames belonging to them are about to be thrown away by lfi_ctx_exit).
+// frames belonging to them are about to be thrown away by lfi_ctx_exit), together
+// with the references those frames were holding.
 void
 frames_unwind_through(struct Frame *f)
 {
     while (tl_frames) {
         struct Frame *x = tl_frames;
         tl_frames = x->prev;
+        holds_release_marked(x);
         frame_abort(x);
         if (x == f)
             break;
     }
+}
+
+// Called before the thread running call 'c' for cage 'target' leaves for good (exit, exec):
+// everything its host frames hold is released, since they will never run again.
+void
+call_unwind_for_exit(struct Call *c, struct Cage *target, struct LFILinuxThread *rt)
+{
+    struct Frame *f = frame_serving(target);
+    if (f)
+        frames_unwind_through(f);
+    else if (c->t == rt)
+        holds_release_marked(NULL); // called straight from the exiting thread: no grate frames
+    call_done(c);
+    for (int i = 0; i < 6; i++)
+        c->xc[i] = NULL;
 }
 
 // May 'caller' act on 'other' (read/write its memory, register handlers for
@@ -172,7 +235,7 @@ threei_dispatch(struct Cage *self, long nr, struct Cage *target,
     }
     struct Call c;
     call_init(&c, self, target, nt, nr, a, ac, false);
-    long r = threei_native(&c);
+    long r = threei_native_guarded(&c);
     call_done(&c);
     if (gd64 && r > 0)
         dirents_old_to_new((uint32_t) (ac[1] & LFI3I_CAGEID_MASK), a[1], r);
@@ -232,17 +295,43 @@ threei_make_call(struct Cage *caller, struct LFILinuxThread *t, lfiptr reqp)
             return -ESRCH;
         }
     }
+    // Both references are recorded so that a forwarded exit/exec, which never returns here,
+    // still releases them (call_unwind_for_exit).
+    hold_push(target);
+    if (self_ref)
+        hold_push(self);
     long r = threei_dispatch(self, (long) rq.callnum, target, t, rq.arg,
         rq.argcage);
-    cage_put(target);
     if (self_ref)
-        cage_put(self);
+        hold_pop_put();
+    hold_pop_put();
     return r;
 }
 
 // ---------------------------------------------------------------------------
 // System call entry from sandboxed code
 // ---------------------------------------------------------------------------
+
+// Runs the terminal implementation of a call. Anything that takes pointer arguments may have the
+// runtime touch guest memory that is inside the sandbox but not accessible (a PROT_NONE page,
+// an unmapped hole): such a fault fails the call with EFAULT. Calls without arguments cannot, and
+// skip the (small) cost of arming the recovery point.
+long
+threei_native_guarded(struct Call *c)
+{
+    if (c->nr >= 0 && c->nr < SYS_ARITY_MAX && sys_arity[c->nr] == 0)
+        return threei_native(c);
+    sigjmp_buf jb;
+    sigjmp_buf *saved = tl_sys_jb;
+    if (sigsetjmp(jb, 0) != 0) {
+        tl_sys_jb = saved;
+        return -EFAULT;
+    }
+    tl_sys_jb = &jb;
+    long r = threei_native(c);
+    tl_sys_jb = saved;
+    return r;
+}
 
 // Does the armed capture request apply to this call? Only a thread-creating clone (what the
 // shim's pthread_create issues) may skip the handler table. The request is validated here,
@@ -364,7 +453,7 @@ threei_sys_handler(struct LFIContext *ctx)
         }
         cl.self = false;
     }
-    long res = threei_native(&cl);
+    long res = threei_native_guarded(&cl);
     // Run a handler for a pending signal before returning to the guest.
     if (unlikely(sig_pending_for(c, t) || t->has_saved_sigmask))
         res = sig_deliver(c, t, r, cnr, cl.a, res);

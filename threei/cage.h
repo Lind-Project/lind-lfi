@@ -156,6 +156,8 @@ struct Cage {
     struct GCtx *g_all;
     struct GCtx *g_free;
     struct GCtx *g_cloner;
+    _Atomic uint64_t img; // program-image generation of the grate side: bumped when the cage
+                          // exec's or exits, which frees its contexts
     _Atomic int inflight; // grate calls currently executing in this cage
     _Atomic bool is_grate; // other cages have handlers in this cage
 
@@ -239,6 +241,12 @@ void grate_spawn_state_reset(void);
 // instead of crashing the runtime.
 extern _Thread_local sigjmp_buf *tl_copy_jb;
 
+// Set while this host thread runs a system call implementation that may dereference guest
+// pointers (see threei_native_guarded): a fault in the runtime's own access to guest memory (a
+// pointer into an unmapped or PROT_NONE page of the sandbox) returns -EFAULT to the guest
+// instead of taking the whole runtime, and every other cage, down.
+extern _Thread_local sigjmp_buf *tl_sys_jb;
+
 // ---------------------------------------------------------------------------
 // System call arguments
 // ---------------------------------------------------------------------------
@@ -275,9 +283,17 @@ void threei_sys_handler(struct LFIContext *ctx);
 long threei_dispatch(struct Cage *self, long nr, struct Cage *target,
     struct LFILinuxThread *t, const uint64_t a[6], const uint64_t ac[6]);
 long threei_native(struct Call *c);
+long threei_native_guarded(struct Call *c);
 long threei_make_call(struct Cage *caller, struct LFILinuxThread *t,
     lfiptr reqp);
 void frames_unwind_through(struct Frame *f);
+// References a host frame holds across a dispatch (the cages a forwarded call acts for). A
+// forwarded exit/exec throws the host stack away, so the frames that would release them never
+// run: they are therefore recorded here, tagged with the innermost grate frame at the time, and
+// released by frames_unwind_through / call_unwind_for_exit.
+void hold_push(struct Cage *c);
+void hold_pop_put(void);
+void call_unwind_for_exit(struct Call *c, struct Cage *target, struct LFILinuxThread *rt);
 void frame_abort(struct Frame *f);
 bool cage_authorized_for(struct Cage *caller, struct Cage *other);
 struct Frame *frame_serving(struct Cage *c);
