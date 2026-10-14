@@ -44,7 +44,7 @@ def main():
         for root, _, files in os.walk(py):
             if os.path.basename(root) == sub[0] and sub[1] in files:
                 return os.path.join(root, sub[1])
-    for exe, where in (("ninja", ("bin", "ninja")), ("patchelf", ("scripts", "patchelf"))):
+    for exe, where in (("ninja", ("scripts", "ninja")), ("patchelf", ("scripts", "patchelf"))):
         src = find(where)
         if not src:
             sys.exit(f"fetch_pytools: {exe} binary not found in its wheel")
