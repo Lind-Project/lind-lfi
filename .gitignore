@@ -1,0 +1,13 @@
+# fetched / built, never committed
+/.toolchain/
+/.tools/
+/.cache/
+/lfi-runtime/build/
+/lfi-runtime/subprojects/lfi-verifier/
+/lfi-runtime/subprojects/fadec/
+/lfi-runtime/subprojects/libelf/
+/lfi-runtime/subprojects/minialloc/
+/lfi-runtime/threei/tests/out/
+/lfi-runtime/threei/grates/out/
+/lfi-runtime/threei/bench/out/
+**/target/

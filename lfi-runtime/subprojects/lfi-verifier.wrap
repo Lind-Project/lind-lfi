@@ -1,6 +1,6 @@
 [wrap-git]
 url = https://github.com/lfi-project/lfi-verifier.git
-revision = master
+revision = 2b46bc5bb39accd602162bba2c21536b03b176a4
 directory = lfi-verifier
 patch_directory = lfi-verifier
 diff_files = lfi-verifier-modsp.patch
