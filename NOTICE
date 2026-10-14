@@ -1,0 +1,24 @@
+Third-party and derived code in this repository
+
+* LFI (this repository's base, `docs/`, `examples/`, `specinvoke/`) and `lfi-runtime/`
+  (everything outside `lfi-runtime/threei/` and `lfi-runtime/tools/lfi-3i-run/`):
+  MIT License, Copyright (c) 2025 Zachary Yedidia. See `LICENSE` and `lfi-runtime/LICENSE`.
+  Sources: https://github.com/lfi-project/lfi, https://github.com/lfi-project/lfi-runtime.
+
+* `lfi-runtime/threei/grates/` (C and Rust example grates, demos, `lib/grate-rs`) is ported from
+  https://github.com/Lind-Project/lind-wasm-example-grates (tested against commit 195e5fd) and
+  `lfi-runtime/threei/grates/lib/fdtables` from https://github.com/Lind-Project/lind-wasm.
+  Apache License 2.0; the license text is `lfi-runtime/threei/grates/LICENSE-APACHE-2.0`.
+  Changes are described in the commit history of this repository.
+
+* `lfi-runtime/threei/grates/c/witness-grate/ed25519/`: Orson Peters' ed25519, see the
+  `license.txt` there (zlib-style).
+
+* Fetched at build time, pinned in `lfi-runtime/subprojects/*.wrap` (not part of this
+  repository): lfi-verifier, fadec, libelf-bsd, minialloc. Fetched by `scripts/bootstrap.sh`:
+  the LFI clang bundle (lfi-project/lfi release v0.12, sha256 in the script) and the Ubuntu
+  libc6 package it may use on old hosts; meson, ninja and patchelf wheels from PyPI.
+  Each keeps its own license.
+
+* `lfi-runtime/threei/` (the 3i layer, guest shim, tests, runner) and the changes to
+  `lfi-runtime/{core,linux}` are released under the MIT License of the surrounding project.
