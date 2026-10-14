@@ -1,0 +1,28 @@
+// Define _GNU_SOURCE unconditionally at the very top
+#define _GNU_SOURCE
+
+#include "core.h"
+
+#include <assert.h>
+#include <stdatomic.h>
+#include <string.h>
+#include <sys/mman.h>
+#include <unistd.h>
+
+EXPORT void *
+lfi_box_register_cb(struct LFIBox *box, void *fn)
+{
+    assert(!"unimplemented");
+}
+
+EXPORT void
+lfi_box_unregister_cb(struct LFIBox *box, void *fn)
+{
+    assert(!"unimplemented");
+}
+
+void
+lfi_box_cb_free(struct LFIBox *box)
+{
+    (void) box;
+}

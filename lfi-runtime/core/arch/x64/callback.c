@@ -1,0 +1,169 @@
+#define _GNU_SOURCE
+
+#include "core.h"
+
+#include <assert.h>
+#include <stdatomic.h>
+#include <string.h>
+#include <sys/mman.h>
+#include <unistd.h>
+
+#if defined(HAVE_SYS_MEMFD_CREATE)
+#include <sys/syscall.h>
+static int
+memfdcreate(const char *name, unsigned int flags)
+{
+    return syscall(SYS_memfd_create, name, flags);
+}
+#elif defined(HAVE_MEMFD_CREATE)
+static int
+memfdcreate(const char *name, unsigned int flags)
+{
+    return memfd_create(name, flags);
+}
+#endif
+
+// The callback entry code loads the target into %r10 and then jumps to the
+// trampoline address stored in the callback.
+static uint8_t cbentry_code[16] = {
+    // clang-format off
+    0x4c, 0x8b, 0x15, 0x09, 0x00, 0x00, 0x00, // mov    0x9(%rip),%r10
+    0xff, 0x25, 0x0b, 0x00, 0x00, 0x00,       // jmp    *0xb(%rip)
+    0x0f, 0x01f, 0x00,                        // nop
+    // clang-format on
+};
+
+extern void
+lfi_callback(void);
+
+extern void
+lfi_callback_struct(void);
+
+static ssize_t
+cbfreeslot(struct LFIBox *box)
+{
+    for (ssize_t i = 0; i < MAXCALLBACKS; i++) {
+        if (!box->callbacks[i])
+            return i;
+    }
+    return -1;
+}
+
+static ssize_t
+cbfind(struct LFIBox *box, void *fn)
+{
+    for (size_t i = 0; i < MAXCALLBACKS; i++) {
+        if (box->callbacks[i] == fn)
+            return i;
+    }
+    return -1;
+}
+
+static bool
+init_cb(struct LFIBox *box)
+{
+    int fd = memfdcreate("", 0);
+    if (fd < 0)
+        return false;
+    size_t size = MAXCALLBACKS * sizeof(struct CallbackEntry);
+    int r = ftruncate(fd, size);
+    if (r < 0)
+        goto err;
+    // Map callback entries outside the sandbox as read/write.
+    void *aliasmap = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd,
+        0);
+    if (aliasmap == (void *) -1)
+        goto err;
+    box->cbinfo.cbentries_alias = (struct CallbackEntry *) aliasmap;
+    // Fill in the code for each entry.
+    for (size_t i = 0; i < MAXCALLBACKS; i++) {
+        memcpy(&box->cbinfo.cbentries_alias[i].code, &cbentry_code[0],
+            sizeof(box->cbinfo.cbentries_alias[i].code));
+    }
+    // Share the mapping inside the sandbox as read/exec. This mapping is
+    // unverified because it contains specific trampoline sequences that the
+    // verifier cannot validate.
+    lfiptr boxmap = box_mapany_locked(box, size,
+        LFI_PROT_READ | LFI_PROT_EXEC, LFI_MAP_SHARED, fd, 0, true);
+    if (boxmap == (lfiptr) -1)
+        goto err1;
+    box->cbinfo.cbentries_box = (struct CallbackEntry *) boxmap;
+
+    close(fd);
+    return true;
+err1:
+    munmap(aliasmap, size);
+    box->cbinfo.cbentries_alias = NULL;
+err:
+    close(fd);
+    return false;
+}
+
+static void *
+register_cb(struct LFIBox *box, void *fn, uint64_t lfi_callback_fn)
+{
+    if (!box->cbinfo.cbentries_box) {
+        if (!init_cb(box)) {
+            LOG(box->engine, "error: failed to initialize callbacks");
+            return NULL;
+        }
+    }
+
+    assert(fn);
+
+    ssize_t slot = cbfind(box, fn);
+    if (slot != -1)
+        return &box->cbinfo.cbentries_box[slot].code[0];
+
+    slot = cbfreeslot(box);
+    if (slot == -1)
+        return NULL;
+
+    // Write 'fn' into the 'target' field for the chosen slot.
+    atomic_store_explicit(&box->cbinfo.cbentries_alias[slot].target,
+        (uint64_t) fn, memory_order_seq_cst);
+    // Write the trampoline into the 'trampoline' field for the chosen slot
+    atomic_store_explicit(&box->cbinfo.cbentries_alias[slot].trampoline,
+        (uint64_t) lfi_callback_fn, memory_order_seq_cst);
+
+    // Mark the slot as allocated.
+    box->callbacks[slot] = fn;
+
+    return &box->cbinfo.cbentries_box[slot].code[0];
+}
+
+EXPORT void *
+lfi_box_register_cb_struct(struct LFIBox *box, void *fn)
+{
+    BOX_LOCK(box, lk);
+    return register_cb(box, fn, (uint64_t) lfi_callback_struct);
+}
+
+EXPORT void *
+lfi_box_register_cb(struct LFIBox *box, void *fn)
+{
+    BOX_LOCK(box, lk);
+    return register_cb(box, fn, (uint64_t) lfi_callback);
+}
+
+EXPORT void
+lfi_box_unregister_cb(struct LFIBox *box, void *fn)
+{
+    BOX_LOCK(box, lk);
+    ssize_t slot = cbfind(box, fn);
+    if (slot == -1)
+        return;
+    box->callbacks[slot] = NULL;
+    atomic_store_explicit(&box->cbinfo.cbentries_alias[slot].target, 0,
+        memory_order_seq_cst);
+    atomic_store_explicit(&box->cbinfo.cbentries_alias[slot].trampoline, 0,
+        memory_order_seq_cst);
+}
+
+void
+lfi_box_cb_free(struct LFIBox *box)
+{
+    if (box->cbinfo.cbentries_alias)
+        munmap(box->cbinfo.cbentries_alias,
+            MAXCALLBACKS * sizeof(struct CallbackEntry));
+}

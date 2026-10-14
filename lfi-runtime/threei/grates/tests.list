@@ -1,0 +1,88 @@
+# name  expected-exit  output-pattern  command...
+run c/geteuid-grate   0 'geteuid ret = 10'  "$RUN" "$OUT/geteuid-grate" "$OUT/geteuid-test"
+run c/strace-grate    0 'write\('           "$RUN" "$OUT/strace-grate" "$OUT/strace-test"
+run c/seccomp-grate/whitelist 0 PASS        "$RUN" "$OUT/seccomp-grate" c/seccomp-grate/policies/seccomp_whitelist_test.conf "$OUT/seccomp-chmod-test"
+run c/seccomp-grate/blacklist 0 PASS        "$RUN" "$OUT/seccomp-grate" c/seccomp-grate/policies/seccomp_blacklist_lfi.conf "$OUT/seccomp-chmod-test"
+run c/imfs-grate      0 '[0-9]+/[0-9]+ Tests Passed'  "$RUN" "$OUT/imfs-grate" "$OUT/imfs-test"
+# A C grate must report its cage's failure: a nonzero exit or a fatal signal may not become exit 0.
+run c/geteuid-grate/propagates-exit   7   - "$RUN" "$OUT/geteuid-grate" "$OUT/exit-status" 7
+run c/geteuid-grate/propagates-signal 134 - "$RUN" "$OUT/geteuid-grate" "$OUT/exit-status" abort
+run c/strace-grate/propagates-exit    7   - "$RUN" "$OUT/strace-grate" "$OUT/exit-status" 7
+run c/strace-grate/propagates-signal  134 - "$RUN" "$OUT/strace-grate" "$OUT/exit-status" abort
+run c/seccomp-grate/propagates-exit   7   - "$RUN" "$OUT/seccomp-grate" c/seccomp-grate/policies/seccomp_whitelist_test.conf "$OUT/exit-status" 7
+run c/seccomp-grate/propagates-signal 134 - "$RUN" "$OUT/seccomp-grate" c/seccomp-grate/policies/seccomp_whitelist_test.conf "$OUT/exit-status" abort
+run c/seccomp-grate/tamper-resistant 0 'seccomp_tamper: PASS' "$RUN" "$OUT/seccomp-grate" c/seccomp-grate/policies/seccomp_whitelist_test.conf "$OUT/seccomp-tamper-test"
+run c/imfs-grate/propagates-exit      7   - "$RUN" "$OUT/imfs-grate" "$OUT/exit-status" 7
+run c/imfs-grate/propagates-signal    134 - "$RUN" "$OUT/imfs-grate" "$OUT/exit-status" abort
+run c/witness-grate   0 -                   bash -c 'cd "$FIX" && "$RUN" --env WITNESS_LOG="$FIX/w.log" "$ABS/witness-grate" "$HERE/../tests/out/c_hello" && grep -q "finished successfully" "$FIX/w.log" && grep -q "^SIGNED seq=0 syscall=59" "$FIX/w.log"'
+run c/witness-grate/propagates-failure 77 - bash -c 'cd "$FIX" && "$RUN" --env WITNESS_LOG="$FIX/w2.log" "$ABS/witness-grate" "$ABS/witness-exit-failure"'
+
+# ---- Rust grates (rust/, built by `make rust`) -----------------------------
+# They run through lrun.sh, inside a root directory that holds the grates
+# (/grates), the test programs (/tests/<grate>) and their fixtures; "%{ ... %}"
+# blocks are handled by the clamp grates themselves.
+G=/grates; T=/tests
+run rust/geteuid-grate 0 'geteuid ret = 3000'  "$LRUN" $G/geteuid-grate $T/geteuid-test
+# A Rust grate must report its cage's failure too: a nonzero exit or a fatal signal may not become 0.
+run rust/geteuid-grate/propagates-exit   7   - "$LRUN" $G/geteuid-grate $T/exit-status 7
+run rust/geteuid-grate/propagates-signal 134 - "$LRUN" $G/geteuid-grate $T/exit-status abort
+run rust/strace-grate/propagates-exit    7   - "$LRUN" $G/strace-grate $T/exit-status 7
+run rust/strace-grate  0 'write_syscall'       "$LRUN" $G/strace-grate $T/strace-grate/strace_test
+run rust/readonly-grate 0 'Ok'                 "$LRUN" $G/readonly-grate $T/readonly-grate/readonly-grate-test
+run rust/fchmod-grate/fchmod   0 '13/13 passed' "$LRUN" $G/fchmod-grate --mask 644 $T/fchmod-grate/fchmod-test
+# One check of fchmodat-test fails by design here: with AT_SYMLINK_NOFOLLOW
+# glibc returns ENOTSUP, but musl emulates it through /proc/self/fd, which the
+# sandbox does not expose (ENOENT).
+run rust/fchmod-grate/fchmodat 1 '20/21 passed' "$LRUN" $G/fchmod-grate --mask 644 $T/fchmod-grate/fchmodat-test
+run rust/umask-grate   0 '10/10 passed'        "$LRUN" $G/umask-grate --force-bits 022 $T/umask-grate/umask_test
+run rust/devnull-grate 0 '10/10 passed'        "$LRUN" $G/devnull-grate $T/devnull-grate/devnull_test
+run rust/chroot-grate  0 '86/86 passed'        "$LRUN" $G/chroot-grate --chroot-dir / $T/chroot-grate/chroot-test
+run rust/testing-grate 0 '5/5 passed'          "$LRUN" $G/testing-grate -s 0:100,1: $T/testing-grate/testing-grate-test
+run rust/write-filter-grate 0 'Ok'             "$LRUN" $G/write-filter-grate $T/write-filter-grate/write_filter-test-grate
+run rust/fdtables-test-grate 0 '43/43 passed'  "$LRUN" $G/fdtables-test-grate $T/fdtables-test-grate/fdtables_test
+run rust/fd-translate-grate  0 '48/48 passed'  "$LRUN" $G/fd-translate-grate $T/fd-translate-grate/fd_translate_test
+run rust/fs-view-grate+imfs 0 '15/15 passed' "$LRUN" $G/imfs-grate $G/fs-view-grate $T/fs-view-grate/fs_view_test
+run rust/imfs-grate    0 '153/153 passed'      "$LRUN" $G/imfs-grate $T/imfs-grate/imfs_test
+run rust/ipc-grate     0 '[0-9]+/[0-9]+ passed'      env WD=/tests/ipc-grate "$LRUN" $G/ipc-grate ./ipc_test
+run rust/ipc-grate/copy-denied 0 'copy_denied: PASS' "$LRUN" $G/testing-grate -s 1002:-1 $G/ipc-grate $T/ipc-grate/copy_denied_test
+run rust/resource-grate 0 '26 tests, 0 failures' env WD=/tests/resource-grate "$LRUN" $G/resource-grate test_resources.cfg $T/resource-grate/resource_test
+run rust/resource-grate/thread-limit 0 'thread_limit: PASS' env WD=/tests/resource-grate "$LRUN" $G/resource-grate test_threads.cfg $T/resource-grate/thread_limit_test
+run rust/fs-routing-clamp/routing 0 '26/26 passed' "$LRUN" $G/fs-routing-clamp --prefix /tmp %{ $G/testing-grate -s 2:-167,4:-167,21:-167,83:-167,84:-167,87:-167 $G/fs-routing-clamp --prefix /tmp/inner %{ $G/testing-grate -s 2:-166 %} %} $T/fs-routing-clamp/fs_routing_test
+run rust/fs-routing-clamp/unix-socket 0 '42/42 passed' "$LRUN" $G/fs-routing-clamp --prefix /tmp %{ $G/testing-grate -s 0:166 %} $T/fs-routing-clamp/unix_socket_outside_prefix_test
+run rust/fs-routing-clamp/listener-poll 0 '39/39 passed' "$LRUN" $G/fs-routing-clamp --prefix /tmp %{ $G/testing-grate -s 0:166 %} $T/fs-routing-clamp/unix_listener_poll_minimal_test
+run rust/fs-routing-clamp/fcntl-dup 0 '11/11 passed' "$LRUN" $G/fs-routing-clamp --prefix /tmp %{ $G/testing-grate -s 0:166 %} $T/fs-routing-clamp/fcntl_dup_minimal_test
+run rust/net-routing-clamp/routing 0 '5/5 passed' "$LRUN" $G/net-routing-clamp --ports 8080-8090 %{ $G/testing-grate -s 49:166,42:166,43:166 %} $T/net-routing-clamp/net_routing_test
+run rust/net-routing-clamp/ratelimit 0 'Cage exited with status 0' env WD=/tests/net-routing-clamp "$LRUN" $G/net-routing-clamp --ports 5432-5432 %{ $G/resource-grate ratelimit_demo.cfg %} $T/net-routing-clamp/ratelimit_demo
+
+# ---- demos: grates composed (demos/) ---------------------------------------
+run demo/fs-isolation 0 '9/9 passed' "$LRUN" $G/fs-routing-clamp --prefix /tmp %{ $G/imfs-grate $G/fs-view-grate %} /demos/fs-isolation/fs_isolation_test
+run demo/least-privilege 0 'Result: 7/7 passed' env WD=/demos/least-privilege "$LRUN" $G/seccomp-grate seccomp_fs_deny_lfi.conf $G/fs-routing-clamp --prefix /workspace %{ $G/imfs-grate %} /demos/least-privilege/least_privilege_test
+# The first grate on the command line is the outermost: it sees only what the
+# grates below it pass on. With strace outermost the denied write to data.db
+# never reaches it; with the filter outermost strace (below it) sees the write
+# and its -EPERM result.
+run demo/write-filter-ordering/strace-outside 0 - bash -c 'WD=/demos/write-filter-ordering "$LRUN" /grates/strace-grate /grates/write-filter-grate /demos/write-filter-ordering/write_filter_ordering_test > "$FIX/wa.log" 2>&1 && grep -q "9/9 passed" "$FIX/wa.log" && ! grep -q "secret data" "$FIX/wa.log"'
+run demo/write-filter-ordering/filter-outside 0 - bash -c 'WD=/demos/write-filter-ordering "$LRUN" /grates/write-filter-grate /grates/strace-grate /demos/write-filter-ordering/write_filter_ordering_test > "$FIX/wb.log" 2>&1 && grep -q "9/9 passed" "$FIX/wb.log" && grep -q "write_syscall(3, \"secret data" "$FIX/wb.log"'
+# mtls-grate loads (it is verified when loaded); its mtls_propagation demo is
+# not run: the grate holds its session lock while rustls waits for the peer's
+# handshake, so a server and client served concurrently deadlock.
+# NOT a functional mTLS test: the load/ prefix marks checks that only show the binary loads and
+# parses its arguments; run_tests.sh reports them separately from policy tests.
+run load/mtls-grate 0 'Usage' "$LRUN" $G/mtls-grate --help
+
+# ---- fail closed: a clamp whose installation partly fails must not let the program run -------
+# deny-register-grate sits between a policy and a clamp and refuses the clamp's registrations.
+# (1) Only the clamp's alternate-route registrations (numbers >= 2000) fail, under a seccomp policy
+#     that denies filesystem access: the program behind the clamp must not reach the host. It either
+#     does not run or its outside-prefix open is denied; "ESCAPED" must never appear.
+# (2) Every registration fails (the clamp cannot even hook its child): the program must not run,
+#     and the chain must report failure.
+run clamp/fs-routes-fail-closed 0 - bash -c 'out=$("$LRUN" /grates/seccomp-grate /demos/least-privilege/seccomp_fs_deny_lfi.conf /grates/deny-register-grate 2000 0 /grates/fs-routing-clamp --prefix /workspace %{ /grates/imfs-grate %} /tests/escape-probe 2>&1); echo "$out" | tail -4; ! echo "$out" | grep -q ESCAPED && [ ! -e "$LFS/tmp/escaped_the_clamp" ]'
+run clamp/fs-install-fails-closed 0 - bash -c 'out=$("$LRUN" /grates/deny-register-grate 0 0 /grates/fs-routing-clamp --prefix /workspace %{ /grates/imfs-grate %} /tests/escape-probe 2>&1); rc=$?; echo "$out" | tail -4; [ $rc -ne 0 ] && ! echo "$out" | grep -q "ESCAPED\|confined:"'
+run clamp/net-install-fails-closed 0 - bash -c 'out=$("$LRUN" /grates/deny-register-grate 0 0 /grates/net-routing-clamp --ports 8080-8090 %{ /grates/testing-grate -s 49:166 %} /tests/escape-probe 2>&1); rc=$?; echo "$out" | tail -4; [ $rc -ne 0 ] && ! echo "$out" | grep -q "ESCAPED\|confined:"'
+# (3) The failure is injected after N successful registrations, for many N, so that every point of
+#     the installation is exercised: whatever has been installed by then, the program must never
+#     reach the host (the seccomp policy denies filesystem access; "ESCAPED" must never appear).
+for n in 0 1 2 3 5 8 13 21 34 55 89 144; do
+  run "clamp/fs-fail-after-$n" 0 - bash -c 'out=$("$LRUN" /grates/seccomp-grate /demos/least-privilege/seccomp_fs_deny_lfi.conf /grates/deny-register-grate 0 '"$n"' /grates/fs-routing-clamp --prefix /workspace %{ /grates/imfs-grate %} /tests/escape-probe 2>&1); ! echo "$out" | grep -q ESCAPED && [ ! -e "$LFS/tmp/escaped_the_clamp" ]'
+done

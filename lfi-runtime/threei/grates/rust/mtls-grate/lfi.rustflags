@@ -1,0 +1,16 @@
+--cfg
+chacha20_force_soft
+--cfg
+poly1305_force_soft
+--cfg
+aes_force_soft
+--cfg
+polyval_force_soft
+--cfg
+ghash_force_soft
+--cfg
+sha2_backend="soft"
+--cfg
+sha1_backend="soft"
+--cfg
+curve25519_dalek_backend="serial"

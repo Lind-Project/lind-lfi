@@ -1,0 +1,83 @@
+option('enable_linux',
+  type: 'boolean',
+  value: true,
+  description: 'enable the Linux emulator (requires Linux)')
+
+option('enable_sbox',
+  type: 'boolean',
+  value: true,
+  description: 'build the sbox library (LFI + passthrough backends)')
+
+option('enable_examples',
+  type: 'boolean',
+  value: true,
+  description: 'build the sbox examples')
+
+option('max_futexes',
+  type: 'integer',
+  min: 1,
+  max: 16384,
+  value: 512,
+  description: 'maximum number of futexes per sandbox')
+
+option('enable_dyld',
+  type: 'boolean',
+  value: true,
+  description: 'enable loading of dynamically-linked executables')
+
+option('enable_tlsdesc',
+  type: 'boolean',
+  value: false,
+  description: 'enable use of TLS descriptors (more efficient TLS) on x86-64; requires libc TLSDESC support')
+
+option('enable_tlsexec',
+  type: 'boolean',
+  value: false,
+  description: 'enable exec TLS (more efficient); liblfi will no longer be usable in a dlopened context')
+
+option('enable_analyzer',
+  type: 'boolean',
+  value: false,
+  description: 'pass -fanalyzer to enable the GCC static analyzer')
+
+option('stores_only',
+  type: 'boolean',
+  value: false,
+  description: 'only sandbox stores -- allows sandboxed programs to read (but not write) outside the sandbox')
+
+option('enable_segue',
+  type: 'boolean',
+  value: true,
+  description: 'use %gs for the sandbox base (x86-64 only)')
+
+option('segue_cache_gs',
+  type: 'boolean',
+  value: false,
+  description: 'cache the %gs base per thread and only execute wrgsbase when entering a different sandbox than the one already loaded, avoiding the slow wrgsbase on every transition (x86-64 only; assumes the host never modifies %gs itself)')
+
+option('enable_pku',
+  type: 'boolean',
+  value: false,
+  description: 'use memory protection keys')
+
+option('static_lfi_run',
+  type: 'boolean',
+  value: false,
+  description: 'statically link lfi-run and lfi-scale')
+
+option('sys_minimal',
+  type: 'boolean',
+  value: false,
+  description: 'enable the minimal runtime, which only supports syscalls for basic functionality and memory allocation')
+
+option('ctxreg_tp_offset',
+  type: 'integer',
+  min: 8,
+  max: 56,
+  value: 16,
+  description: 'byte offset of the thread pointer within the ctxreg array (must be a multiple of 8)')
+
+option('enable_ubench_baselines',
+  type: 'boolean',
+  value: false,
+  description: 'build the extra non-LFI host baseline benchmarks (native_call, host_syscall, host_ctxswitch) in lfi-ubench')

@@ -1,0 +1,16 @@
+[binaries]
+c = 'clang'
+cpp = 'clang++'
+ar = 'llvm-ar'
+strip = 'llvm-strip'
+exe_wrapper = ['qemu-riscv64', '-L', '/opt/riscv-root']
+
+[built-in options]
+c_args = '-target riscv64-linux-gnu'
+c_link_args = '-target riscv64-linux-gnu -fuse-ld=lld'
+
+[host_machine]
+system = 'linux'
+cpu_family = 'riscv64'
+cpu = 'riscv64'
+endian = 'little'

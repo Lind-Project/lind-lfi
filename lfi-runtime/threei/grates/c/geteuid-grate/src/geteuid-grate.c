@@ -1,0 +1,124 @@
+#include <errno.h>
+// lind_syscall.h provides functions needed for cage interactions:
+// register_handler, copy_data_between_cage, and make_threei_call
+#include <lind_syscall.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+#define GETEUID_SYSCALL 107
+
+#ifdef DEBUG
+#define LOG(...) printf(__VA_ARGS__)
+#else
+#define LOG(...) ((void)0)
+#endif
+
+// Dispatcher function
+//
+// Entry point into a grate when a child cage invokes a registered
+// syscall. This function is used to invoke the appropriate handler,
+// and value returned is the passed down to the calling cage.
+//
+// Args:
+//      fn_ptr_uint     Address of the registered syscall handler within the
+//                      grate's address space.
+//      grateid         Identifier of the target grate.
+//      arg[1-6]        Syscall arguments. Numeric types are passed by value,
+//      pointers
+//                      are passed as addresses in the originating cage's
+//                      address space.
+//      arg[1-6]cage    Cage IDs corresponding to each argument, indicating
+//      which cage's address
+//                      space the argument belongs to.
+int pass_fptr_to_wt(uint64_t fn_ptr_uint, uint64_t grateid, uint64_t arg1,
+		    uint64_t arg1cage, uint64_t arg2, uint64_t arg2cage,
+		    uint64_t arg3, uint64_t arg3cage, uint64_t arg4,
+		    uint64_t arg4cage, uint64_t arg5, uint64_t arg5cage,
+		    uint64_t arg6, uint64_t arg6cage) {
+	if (fn_ptr_uint == 0) {
+		LOG("[Grate|geteuid] Invalid function ptr\n");
+		return -1;
+	}
+
+	int cage_id = arg1cage;
+
+	LOG("[Grate|geteuid] Handling function ptr: %llu from cage: %d\n",
+	    fn_ptr_uint, cage_id);
+
+	int (*fn)(int) = (int (*)(int))(uintptr_t)fn_ptr_uint;
+
+	return fn(cage_id);
+}
+
+// Function ptr and signatures of this grate
+int geteuid_grate(int);
+
+int geteuid_grate(int cageid) {
+	LOG("[Grate|geteuid] In geteuid_grate %d handler for cage: %d\n",
+	    getpid(), cageid);
+	return 10;
+}
+
+// Main function will always be same in all grates
+int main(int argc, char *argv[]) {
+	// Should be at least two inputs (at least one grate file and one cage
+	// file)
+	if (argc < 2) {
+		LOG("Usage: %s <cage_file>\n", argv[0]);
+		exit(EXIT_FAILURE);
+	}
+
+	int grateid = getpid();
+
+	// Because we assume that all cages are unaware of the existence of
+	// grate, cages will not handle the logic of `exec`ing grate. Instead, a
+	// grate instance is responsible for mananging this.
+	//
+	// It forks and execs exactly once: To execute the child binary provided
+	// as argv[1], passing argv[1..] as that program's command-line
+	// arguments. Any further process management is handled by this executed
+	// program, not by the original grate.
+
+	pid_t pid = fork();
+	if (pid < 0) {
+		perror("fork failed");
+		exit(EXIT_FAILURE);
+	} else if (pid == 0) {
+		int cageid = getpid();
+		// Set the geteuid (syscallnum=107) of this cage to call this
+		// grate function geteuid_grate (func index=0) Syntax of
+		// register_handler:
+		//   register_handler(
+		//     int64_t targetcage, - Cage ID to be intercepted
+		//     uint64_t targetcallnum, - Syscall number to be
+		//     intercepted uint64_t this_grate_id, - Grate ID to
+		//     redirect call to uint64_t optional_arg - Handler function
+		//     pointer if registering
+		//   )
+		uint64_t fn_ptr_addr = (uint64_t)(uintptr_t)&geteuid_grate;
+		LOG("[Grate|geteuid] Registering geteuid handler for cage "
+		    "%d in "
+		    "grate %d with fn ptr addr: %llu\n",
+		    cageid, grateid, fn_ptr_addr);
+		int ret = register_handler(cageid, GETEUID_SYSCALL, grateid,
+					   fn_ptr_addr);
+
+		if (execv(argv[1], &argv[1]) == -1) {
+			perror("execv failed");
+			exit(EXIT_FAILURE);
+		}
+	}
+
+	int status;
+	int cage_status = 0;
+	while (wait(&status) > 0) {
+		LOG("[Grate|geteuid] terminated, status: %d\n", status);
+		cage_status = (WIFEXITED(status) ? WEXITSTATUS(status) : WIFSIGNALED(status) ? 128 + WTERMSIG(status) : 1);
+	}
+
+	// The grate's exit status is the cage's: a failed or signaled cage must fail the caller.
+	return cage_status;
+}
