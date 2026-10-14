@@ -3,7 +3,7 @@
 HERE=$(cd "$(dirname "$0")" && pwd)
 status=0
 mkdir -p "$HERE/out"
-TC=${LFI_TC:-/home/lind/lfi/.toolchain/x86_64-lfi-clang}
+TC=${LFI_TC:-${LFI_ROOT:?source scripts/env.sh first}/.toolchain/x86_64-lfi-clang}
 RUN=${RUN:-$HERE/../../build/tools/lfi-3i-run/lfi-3i-run}
 # Fresh binaries only: a failed build must not leave an old binary to be measured as if current.
 rm -f "$HERE/out/b_cpu_clang.o" "$HERE/out/b_cpu_native" "$HERE/out/b_cpu_lfi"
