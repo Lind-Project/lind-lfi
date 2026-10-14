@@ -3,7 +3,7 @@
 # installed system-wide). Safe to re-run.
 #
 #   .toolchain/x86_64-lfi-clang   the LFI clang bundle, lfi-project/lfi release v0.12 (checksum-pinned)
-#   .tools/venv                   meson and ninja (python venv)
+#   .tools/bin, .tools/py         meson, ninja, patchelf (pinned PyPI wheels, no pip needed)
 #   Rust nightly-2026-07-16       with rust-src and the x86_64-unknown-linux-musl target, via rustup
 #                                 (only needed for the Rust grates; skip with --no-rust)
 #
@@ -39,12 +39,11 @@ fetch() { # url file sha256
     mv "$2.part" "$2"
 }
 
-# ---- meson / ninja ---------------------------------------------------------------------------
-if [ ! -x .tools/venv/bin/meson ]; then
-    log "creating .tools/venv (meson, ninja, patchelf)"
-    python3 -m venv .tools/venv
-    .tools/venv/bin/pip install -q --upgrade pip
-    .tools/venv/bin/pip install -q "meson>=1.4" ninja patchelf
+# ---- meson / ninja / patchelf ----------------------------------------------------------------
+# (fetched as checksum-verified wheels without pip or venv, which a host may not have)
+if [ ! -x .tools/bin/meson ] || [ ! -x .tools/bin/ninja ] || [ ! -x .tools/bin/patchelf ]; then
+    log "fetching meson, ninja and patchelf into .tools/"
+    python3 scripts/fetch_pytools.py .tools
 fi
 
 # ---- LFI clang bundle ------------------------------------------------------------------------
@@ -68,8 +67,8 @@ if [ "$(printf '%s\n2.38\n' "$host_glibc" | sort -V | head -1)" != "2.38" ] && [
     n=0
     while IFS= read -r f; do
         if readelf -l "$f" 2>/dev/null | grep -q INTERP; then
-            old_rpath=$(.tools/venv/bin/patchelf --print-rpath "$f" 2>/dev/null || true)
-            .tools/venv/bin/patchelf --set-interpreter "$G/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2" \
+            old_rpath=$(.tools/bin/patchelf --print-rpath "$f" 2>/dev/null || true)
+            .tools/bin/patchelf --set-interpreter "$G/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2" \
                 --set-rpath "${old_rpath:+$old_rpath:}$G/usr/lib/x86_64-linux-gnu:/lib/x86_64-linux-gnu" "$f"
             n=$((n + 1))
         fi
