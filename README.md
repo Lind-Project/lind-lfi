@@ -107,3 +107,27 @@ Built on LFI by Zachary Yedidia and contributors (`lfi-project`, MIT License —
 the `fdtables` crate from [`lind-wasm`](https://github.com/Lind-Project/lind-wasm), with
 their original license terms. Upstream LFI's own README and guides are linked under
 `docs/` and at <https://github.com/lfi-project/lfi>.
+
+## Release validation (2026-10-14)
+
+Validated from fresh clones under `/tmp` (outside the development home directory), starting at
+`scripts/bootstrap.sh`, on Ubuntu 22.04 (glibc 2.35, x86-64, i9-12900K).
+
+| Component | Revision / version |
+|---|---|
+| this repository | tag `v0.1.0-experimental` |
+| applications | `lind-wasm-apps` branch `lfi-threei` @ `817f5c9594` (base `3cf7af47ba`, upstream `main` when the migration was made; upstream has moved since) |
+| SPEC scripts | `lind-lfi-spec` branch `release/v0.1.0-experimental` @ `7eea783` |
+| LFI clang bundle | `lfi-project/lfi` release v0.12, sha256 `4083cdeb…0673`; clang 23.0.0git (`b06a60e9`) |
+| verifier / deps | lfi-verifier `2b46bc5` (+ our patch), fadec `682f9f1`, libelf-bsd `1ef4231`, minialloc `8368119` |
+| tools | meson 1.12.1, ninja 1.13.0, patchelf 0.19.1.0; Rust `nightly-2026-07-16` (rustc 1.99.0-nightly `d0babd8b6`) |
+
+Results (verification on): runtime `meson test` 58/58; `threei/tests` 49/49; `threei/grates` 62/62 plus
+1 load-only check; benchmark scripts run and report failure (failing runner or compiler gives a
+non-zero exit). Applications: the 7 supported apps build; `make test` 48/48 directly and 48/48 under
+the strace grate; the apps' own `run_tests.sh` results are in the apps branch README (the same counts
+direct and under five different grates; a failing program's exit status reaches the caller). SPEC scripts:
+`lbm mcf imagick gcc` produce valid rows in a fresh clone and a failing runner makes `spec.sh` and
+`train.sh` exit non-zero. **Not re-run from the clean clone:** the full SPEC measurements (the numbers in
+`lind-lfi-spec/README.md` come from the development tree with the same script logic) and the benchmark
+numbers quoted above.
